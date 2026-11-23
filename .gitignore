@@ -1,0 +1,25 @@
+# Environment & Secrets
+.env
+*.session
+*.session-journal
+
+# Download workspace
+downloads/
+
+# Cookies
+cookies.txt
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Pytest / Temporary test files
+.pytest_cache/
+test_tmp/

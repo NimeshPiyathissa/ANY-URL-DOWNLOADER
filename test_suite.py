@@ -21,6 +21,8 @@ from downloader import (
     extract_filename_from_headers,
     _derive_stream_filename,
     _extract_zoom_mp4_and_title,
+    _extract_zoom_meeting_id,
+    _extract_zoom_csrf_token,
     _load_netscape_cookies,
     ZoomPasscodeRequiredError,
     GDRIVE_FILE_PATTERN,
@@ -33,7 +35,7 @@ from bot import parse_user_input
 
 def run_tests():
     print("=" * 60)
-    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.2.0)")
+    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.2.1)")
     print("=" * 60)
 
     # 1. Test formatters
@@ -197,8 +199,24 @@ def run_tests():
     assert "apt-get install -y aria2" in setup_sh, "setup_service.sh must auto-install aria2"
     print("✓ setup_service.sh one-command systemd installer script with aria2 verified")
 
-    # 16. Test Zoom fallback extractor & Netscape cookies loader (v2.1.0)
+    # 16. Test Zoom meeting ID & CSRF extraction and fallback extractor (v2.2.1)
     assert issubclass(ZoomPasscodeRequiredError, ValueError)
+
+    # Test meeting ID extraction from URL paths and HTML
+    assert _extract_zoom_meeting_id("https://us02web.zoom.us/rec/share/abc123xyz") == "abc123xyz"
+    assert _extract_zoom_meeting_id("https://company.zoom.us/rec/play/987xyz?startTime=123") == "987xyz"
+    assert _extract_zoom_meeting_id("https://zoom.us/recording/play/lecture_456") == "lecture_456"
+    sample_id_html = '<input type="hidden" name="id" value="meet_token_999"/>'
+    assert _extract_zoom_meeting_id("https://zoom.us/rec/validate_meet_passwd", sample_id_html) == "meet_token_999"
+    print("✓ Zoom meeting ID extraction from URLs and HTML verified")
+
+    # Test CSRF token extraction from meta tag and inline JS
+    sample_meta_html = '<meta name="csrf-token" content="csrf_meta_123"/>'
+    assert _extract_zoom_csrf_token(sample_meta_html) == "csrf_meta_123"
+    sample_js_html = '<script>window.__data__ = { csrfToken: "csrf_js_456" };</script>'
+    assert _extract_zoom_csrf_token(sample_js_html) == "csrf_js_456"
+    print("✓ Zoom CSRF token extraction from meta tags and JS verified")
+
     sample_zoom_html = """
     <html>
       <head><title>Quantum Computing Lecture - Zoom</title></head>
@@ -206,7 +224,7 @@ def run_tests():
         <script>
           window.__data__ = {
             topic: "Quantum Computing Lecture",
-            viewMp4Url: "https://ssrweb.zoom.us/rec/play/quantum_lecture.mp4?sig=123"
+            viewMp4Url: "https:\\/\\/ssrweb.zoom.us\\/rec\\/play\\/quantum_lecture.mp4?sig=123"
           };
         </script>
       </body>
@@ -215,7 +233,13 @@ def run_tests():
     extracted_mp4, extracted_topic = _extract_zoom_mp4_and_title(sample_zoom_html)
     assert extracted_mp4 == "https://ssrweb.zoom.us/rec/play/quantum_lecture.mp4?sig=123"
     assert extracted_topic == "Quantum Computing Lecture"
-    print("✓ Zoom HTML MP4 & topic extraction verified")
+    print("✓ Zoom HTML MP4 (with escaped slashes) & topic extraction verified")
+
+    # Verify action=viewdetailpage and ZOOM-CSRFTOKEN in downloader.py
+    assert '"action": "viewdetailpage"' in dl_code, "downloader.py must use action='viewdetailpage'"
+    assert '"ZOOM-CSRFTOKEN"' in dl_code, "downloader.py must include ZOOM-CSRFTOKEN header"
+    assert '"X-Requested-With": "XMLHttpRequest"' in dl_code, "downloader.py must include X-Requested-With header"
+    print("✓ Zoom passcode validation headers & payload verified in downloader.py")
 
     dummy_cookie_file = Path("test_cookies_tmp.txt")
     dummy_cookie_file.write_text(".zoom.us\tTRUE\t/\tTRUE\t1790000000\t_zm_session\txyz123\n", encoding="utf-8")
@@ -273,7 +297,7 @@ def run_tests():
         shutil.rmtree(test_dir, ignore_errors=True)
 
     asyncio.run(test_ffmpeg())
-    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.2.0)!\n")
+    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.2.1)!\n")
 
 
 if __name__ == "__main__":

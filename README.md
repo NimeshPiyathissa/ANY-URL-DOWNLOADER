@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.2.0"><img src="https://img.shields.io/badge/Release-v2.2.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.2.0"/></a>
+  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.2.1"><img src="https://img.shields.io/badge/Release-v2.2.1-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.2.1"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://github.com/Mayuri-Chan/pyrofork"><img src="https://img.shields.io/badge/Pyrofork-MTProto%20v2-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Pyrofork MTProto"/></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-32x%20Fragments%20%2B%20aria2c-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp & aria2c"/></a>
@@ -22,6 +22,7 @@
 
 ## 📑 Table of Contents
 
+- [What's New in v2.2.1](#-whats-new-in-v221)
 - [What's New in v2.2.0](#-whats-new-in-v220)
 - [What's New in v2.1.0](#-whats-new-in-v210)
 - [Architecture & Upload Modes](#-architecture--upload-modes)
@@ -33,6 +34,15 @@
 - [Step-by-Step Ubuntu VPS Setup](#-step-by-step-ubuntu-vps-setup)
 - [Troubleshooting & FAQ](#-troubleshooting--faq)
 - [License & Contributions](#-license--contributions)
+
+---
+
+## 🚀 What's New in v2.2.1
+
+* **🔑 Bulletproof Zoom Passcode & CSRF Token Validation:** Completely resolved the false passcode rejection bug (`Zoom Passcode Incorrect: The meeting server rejected the provided passcode`). The bot now extracts the exact `meeting_id` from the URL path (`/rec/share/...`, `/rec/play/...`) and dynamically pulls the Zoom CSRF token (`ZOOM-CSRFTOKEN`, `_zm_ctaid`, `cred`) from response cookies and HTML/JS meta.
+* **📡 Correct Zoom Payload & Redirect Following:** Submits validation requests to `/rec/validate_meet_passwd` with the required `action: "viewdetailpage"`, `Origin`, `Referer`, and `X-Requested-With: XMLHttpRequest` headers, and automatically follows `result.redirectUrl` to retrieve the direct stream.
+* **🛡️ Bot/CAPTCHA Protection Detection:** When Zoom triggers anti-bot CAPTCHA challenges, the bot immediately detects it and provides clear instructions on exporting `cookies.txt` from the browser to unlock the video.
+* **🔗 Direct `videopassword` & `?pwd=` yt-dlp Injection:** Injects both `"videopassword"` and URL query parameter `?pwd=<passcode>` directly into `yt-dlp` before attempting fallback extraction.
 
 ---
 

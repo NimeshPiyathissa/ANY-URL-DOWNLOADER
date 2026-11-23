@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import logging
 import math
 import os
@@ -138,6 +139,95 @@ def _load_netscape_cookies(cookies_path: Path) -> dict:
     return cookies
 
 
+def _extract_zoom_meeting_id(url: str, page_text: str = "") -> str:
+    """
+    Extract the Zoom meeting/recording ID from the URL path, query params, or page HTML.
+    e.g. /rec/share/<meeting_id>, /rec/play/<meeting_id>, or /recording/play/<meeting_id>.
+    """
+    parsed = urllib.parse.urlparse(url)
+
+    # 1. From URL path
+    path_match = re.search(r"/(?:rec/(?:share|play)|recording/play)/([^/?&#]+)", parsed.path)
+    if path_match:
+        val = path_match.group(1).strip()
+        if val and val.lower() not in ("share", "play", "recording"):
+            return val
+
+    # 2. From URL query params (e.g. ?id=... or ?meetId=...)
+    qs = urllib.parse.parse_qs(parsed.query)
+    for key in ("id", "meetId", "meetingId", "fileId"):
+        if key in qs and qs[key]:
+            val = qs[key][0].strip()
+            if val:
+                return val
+
+    # 3. From HTML inputs or inline JS
+    if page_text:
+        patterns = [
+            r'<input[^>]+name=["\']id["\'][^>]+value=["\']([^"\']+)["\']',
+            r'<input[^>]+value=["\']([^"\']+)["\'][^>]+name=["\']id["\']',
+            r'meetingId["\']?\s*[:=]\s*["\']([a-zA-Z0-9_\-]+)["\']',
+            r'fileId["\']?\s*[:=]\s*["\']([a-zA-Z0-9_\-]+)["\']',
+            r'meetId["\']?\s*[:=]\s*["\']([a-zA-Z0-9_\-]+)["\']',
+        ]
+        for pat in patterns:
+            m = re.search(pat, page_text, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip()
+                if val and val.lower() not in ("app", "root", "main", "null", "none"):
+                    return val
+
+    return ""
+
+
+def _extract_zoom_csrf_token(
+    page_text: str = "",
+    cookie_jar: Optional[aiohttp.CookieJar] = None,
+    resp_headers: Optional[aiohttp.typedefs.LooseHeaders] = None,
+) -> str:
+    """
+    Extract Zoom CSRF token from cookie jar, response headers, HTML meta tags, or inline JS.
+    """
+    # 1. From cookie jar
+    if cookie_jar:
+        for cookie in cookie_jar:
+            if cookie.key.upper() in ("ZOOM-CSRFTOKEN", "_ZM_CTAID", "CRED", "_ZM_CSRF"):
+                if cookie.value:
+                    return cookie.value
+
+    # 2. From response headers
+    if resp_headers:
+        for h in ("ZOOM-CSRFTOKEN", "X-CSRF-Token", "_zm_ctaid"):
+            val = resp_headers.get(h)
+            if val:
+                return val
+
+    # 3. From HTML meta tags
+    meta_m = re.search(
+        r'<meta[^>]+(?:name|property)=["\'](?:csrf-token|_csrf)["\'][^>]+content=["\']([^"\']+)["\']',
+        page_text,
+        re.IGNORECASE,
+    )
+    if meta_m:
+        return meta_m.group(1).strip()
+
+    # 4. From inline JS
+    js_patterns = [
+        r'csrfToken["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'_csrf["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'csrf_token["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'["\']ZOOM-CSRFTOKEN["\']\s*:\s*["\']([^"\']+)["\']',
+    ]
+    for pat in js_patterns:
+        m = re.search(pat, page_text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if val and val.lower() not in ("null", "undefined", "none"):
+                return val
+
+    return ""
+
+
 def _extract_zoom_mp4_and_title(page_html: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract direct MP4 streaming URL and meeting title from Zoom recording web page HTML."""
     mp4_url: Optional[str] = None
@@ -163,13 +253,14 @@ def _extract_zoom_mp4_and_title(page_html: str) -> Tuple[Optional[str], Optional
         r'<video[^>]+src=["\']([^"\']+)["\']',
         r'<source[^>]+src=["\']([^"\']+)["\']',
         r'["\'](https?://[^"\']+\.mp4(?:\?[^"\']*)?)["\']',
+        r'["\'](https?://[^"\']*(?:zoom\.us|zoomgov\.com)[^"\']*/play/[^"\']*)["\']',
     ]
     for pat in patterns:
         m = re.search(pat, page_html, re.IGNORECASE)
         if m:
-            candidate = m.group(1).replace("\\u0026", "&").replace("&amp;", "&")
-            candidate = html.unescape(candidate)
-            if candidate.startswith("http") and ".mp4" in candidate:
+            candidate = m.group(1).replace("\\u0026", "&").replace("&amp;", "&").replace(r"\/", "/")
+            candidate = html.unescape(candidate).strip()
+            if candidate.startswith("http"):
                 mp4_url = candidate
                 break
 
@@ -183,8 +274,8 @@ async def _fallback_zoom_mp4_url(
 ) -> Tuple[str, Optional[str], dict]:
     """
     Resilient async aiohttp Zoom web-page fallback extractor.
-    Loads cookies from cookies.txt if present, submits passcode to /rec/validate_meet_passwd if needed,
-    and extracts the direct MP4 streaming URL from HTML/JSON state.
+    Loads cookies from cookies.txt if present, submits passcode to /rec/validate_meet_passwd with
+    CSRF token, action='viewdetailpage', and proper headers, follows redirects, and extracts direct MP4 URL.
     Returns: (mp4_url, extracted_title, headers)
     """
     parsed_url = urllib.parse.urlparse(url)
@@ -194,67 +285,189 @@ async def _fallback_zoom_mp4_url(
     if cookies_path and cookies_path.is_file():
         cookie_dict = _load_netscape_cookies(cookies_path)
 
+    jar = aiohttp.CookieJar(unsafe=True)
+    timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_read=30)
+
+    clean_passcode = passcode.strip() if passcode else None
+
+    # Realistic desktop Chrome browser headers
     headers = {
         "User-Agent": Config.DEFAULT_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": base_origin + "/",
     }
 
-    jar = aiohttp.CookieJar(unsafe=True)
-    timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_read=30)
-
     async with aiohttp.ClientSession(cookie_jar=jar, headers=headers, timeout=timeout, cookies=cookie_dict) as session:
-        async with session.get(url, allow_redirects=True) as resp:
-            page_text = await resp.text(errors="ignore")
+        # Step 1: Initial GET of Zoom recording URL
+        # If passcode is supplied and not in URL, test URL with ?pwd=
+        fetch_url = url
+        if clean_passcode and "pwd=" not in fetch_url:
+            sep = "&" if "?" in fetch_url else "?"
+            fetch_url = f"{fetch_url}{sep}pwd={urllib.parse.quote(clean_passcode)}"
 
-        # Check if passcode submission is required
+        async with session.get(fetch_url, allow_redirects=True) as resp:
+            page_text = await resp.text(errors="ignore")
+            resp_headers = resp.headers
+
+        # Check if direct MP4 stream is already unlocked (e.g. via ?pwd= or cookies)
+        mp4_url, title = _extract_zoom_mp4_and_title(page_text)
+        if mp4_url:
+            request_headers = {
+                "User-Agent": Config.DEFAULT_USER_AGENT,
+                "Referer": base_origin + "/",
+            }
+            cookie_parts = [f"{c.key}={c.value}" for c in jar]
+            if cookie_parts:
+                request_headers["Cookie"] = "; ".join(cookie_parts)
+            return mp4_url, title, request_headers
+
+        # Check if passcode or authentication is required
         needs_passcode = bool(
             "validate_meet_passwd" in page_text
             or "meet_passwd" in page_text
             or "password_input" in page_text
-            or (re.search(r'passcode|password', page_text, re.IGNORECASE) and "viewMp4Url" not in page_text and ".mp4" not in page_text)
+            or (
+                re.search(r'passcode|password', page_text, re.IGNORECASE)
+                and "viewMp4Url" not in page_text
+                and ".mp4" not in page_text
+            )
         )
 
-        if needs_passcode:
-            if not passcode:
+        if needs_passcode or clean_passcode:
+            if not clean_passcode:
                 raise ZoomPasscodeRequiredError(
                     "🔐 This Zoom recording requires a passcode (or valid cookies.txt)."
                 )
 
-            # Extract meeting ID or form fields
-            meet_id_match = re.search(r'id["\']?\s*[:=]\s*["\']([a-zA-Z0-9_-]+)["\']', page_text)
-            meeting_id = meet_id_match.group(1) if meet_id_match else ""
+            # Step 2: Extract meeting ID & CSRF Token
+            meeting_id = _extract_zoom_meeting_id(url, page_text)
+            csrf_token = _extract_zoom_csrf_token(page_text, cookie_jar=jar, resp_headers=resp_headers)
+
+            logger.info(f"Zoom Passcode Auth: meeting_id='{meeting_id}', csrf_token={'[FOUND]' if csrf_token else '[NONE]'}")
 
             validate_url = f"{base_origin}/rec/validate_meet_passwd"
+            post_headers = {
+                "User-Agent": Config.DEFAULT_USER_AGENT,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Origin": base_origin,
+                "Referer": url,
+                "X-Requested-With": "XMLHttpRequest",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            }
+            if csrf_token:
+                post_headers["ZOOM-CSRFTOKEN"] = csrf_token
+
             post_data = {
                 "id": meeting_id,
-                "passwd": passcode.strip(),
-                "action": "view",
+                "passwd": clean_passcode,
+                "action": "viewdetailpage",
             }
 
-            async with session.post(validate_url, data=post_data, allow_redirects=True) as post_resp:
-                post_text = await post_resp.text(errors="ignore")
-                # Also fetch original URL with updated cookies
-                async with session.get(url, allow_redirects=True) as follow_resp:
-                    follow_text = await follow_resp.text(errors="ignore")
-                page_text = post_text + "\n" + follow_text
+            post_json = None
+            post_text = ""
+            async with session.post(validate_url, data=post_data, headers=post_headers, allow_redirects=True) as post_resp:
+                try:
+                    post_json = await post_resp.json()
+                except Exception:
+                    try:
+                        raw_t = await post_resp.text(errors="ignore")
+                        post_json = json.loads(raw_t)
+                    except Exception:
+                        post_json = None
 
-        mp4_url, title = _extract_zoom_mp4_and_title(page_text)
+                post_text = await post_resp.text(errors="ignore") if not post_json else json.dumps(post_json)
+
+            # Step 3: Inspect validation response
+            redirect_target = None
+            if isinstance(post_json, dict):
+                is_success = bool(
+                    post_json.get("status") is True
+                    or post_json.get("errorCode") == 0
+                    or (isinstance(post_json.get("result"), dict) and post_json.get("result"))
+                )
+
+                if is_success:
+                    res = post_json.get("result")
+                    if isinstance(res, dict):
+                        redirect_target = res.get("redirectUrl") or res.get("url")
+                    elif isinstance(post_json.get("redirectUrl"), str):
+                        redirect_target = post_json["redirectUrl"]
+                else:
+                    err_code = post_json.get("errorCode")
+                    err_msg_str = str(post_json.get("errorMessage") or post_json.get("message") or "").strip()
+                    full_err_str = f"{err_code}: {err_msg_str}".lower()
+
+                    is_captcha = bool(
+                        "captcha" in full_err_str
+                        or "robot" in full_err_str
+                        or "recaptcha" in full_err_str
+                        or "verify" in full_err_str
+                        or err_code in (3000, 3001, 3002, 4001, 4002)
+                    )
+
+                    if is_captcha:
+                        raise ValueError(
+                            "🛡️ **Zoom Bot/CAPTCHA Protection Triggered:**\n\n"
+                            "Zoom has enabled anti-bot verification (CAPTCHA) on this recording.\n\n"
+                            "💡 **How to Download:**\n"
+                            "1. Open the Zoom link in your computer browser.\n"
+                            "2. Enter the passcode and unlock the recording.\n"
+                            "3. Export your cookies as `cookies.txt` using a browser extension (such as *Get cookies.txt LOCALLY*).\n"
+                            "4. Send the `cookies.txt` file directly into this Telegram chat, then retry downloading!"
+                        )
+
+                    raise ValueError(
+                        f"🔒 **Zoom Passcode Rejected:** The meeting server rejected the provided passcode "
+                        f"({err_msg_str or 'Code ' + str(err_code) if err_code else 'Invalid passcode'}).\n\n"
+                        "💡 If you are sure the passcode is correct, Zoom may require browser cookies. "
+                        "Send a `cookies.txt` file directly into this chat to authenticate."
+                    )
+
+            # Step 4: Follow redirect or re-fetch URL with authenticated cookies
+            target_get_url = url
+            if redirect_target:
+                target_get_url = urllib.parse.urljoin(base_origin, redirect_target)
+
+            async with session.get(target_get_url, allow_redirects=True) as follow_resp:
+                follow_text = await follow_resp.text(errors="ignore")
+
+            combined_html = post_text + "\n" + follow_text
+            mp4_url, title = _extract_zoom_mp4_and_title(combined_html)
+
+            # Check if captcha form is present on the followed page
+            if not mp4_url:
+                if re.search(r'recaptcha|g-recaptcha|cf-turnstile|captcha_input', combined_html, re.IGNORECASE):
+                    raise ValueError(
+                        "🛡️ **Zoom Bot/CAPTCHA Protection Triggered:**\n\n"
+                        "Zoom requires human browser verification (CAPTCHA) for this recording.\n\n"
+                        "💡 **How to Download:**\n"
+                        "1. Open the Zoom recording link in your browser.\n"
+                        "2. Enter the passcode and complete the CAPTCHA.\n"
+                        "3. Export your browser cookies as `cookies.txt` and send it to this bot chat!"
+                    )
+
         if not mp4_url:
-            if needs_passcode and passcode:
+            if clean_passcode:
                 raise ValueError(
-                    "🔒 **Zoom Passcode Incorrect:** The meeting server rejected the provided passcode."
+                    "🔒 **Zoom Passcode Validation Issue:** Zoom did not unlock the video stream.\n\n"
+                    "💡 Zoom might require solving a CAPTCHA or signing in via SSO/browser. "
+                    "Export your browser's `cookies.txt` after unlocking the video, send it to this chat, and retry."
                 )
             raise ValueError(
                 "⚠️ **Zoom Extraction Failed:** Could not locate direct MP4 stream on recording page. "
-                "If this is an institutional meeting, please upload your `cookies.txt` to the bot."
+                "If this is a restricted or institutional meeting, please upload your `cookies.txt` to the bot."
             )
 
         request_headers = {
             "User-Agent": Config.DEFAULT_USER_AGENT,
             "Referer": base_origin + "/",
         }
+        cookie_parts = [f"{c.key}={c.value}" for c in jar]
+        if cookie_parts:
+            request_headers["Cookie"] = "; ".join(cookie_parts)
+
         return mp4_url, title, request_headers
 
 
@@ -751,8 +964,15 @@ async def download_stream_or_zoom(
         "http_headers": http_headers,
     }
 
-    if passcode:
-        ydl_opts["videopassword"] = passcode.strip()
+    target_url = url
+    clean_passcode = passcode.strip() if passcode else None
+    if is_zoom_url(url) and clean_passcode:
+        ydl_opts["videopassword"] = clean_passcode
+        if "pwd=" not in target_url:
+            sep = "&" if "?" in target_url else "?"
+            target_url = f"{target_url}{sep}pwd={urllib.parse.quote(clean_passcode)}"
+    elif clean_passcode:
+        ydl_opts["videopassword"] = clean_passcode
 
     if Config.COOKIES_FILE.is_file():
         ydl_opts["cookiefile"] = str(Config.COOKIES_FILE)
@@ -787,7 +1007,7 @@ async def download_stream_or_zoom(
     def run_ydl_sync():
         nonlocal info_dict
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=True)
+            info_dict = ydl.extract_info(target_url, download=True)
             return info_dict
 
     try:

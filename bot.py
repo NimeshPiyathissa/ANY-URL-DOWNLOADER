@@ -306,7 +306,7 @@ def build_welcome_text(user_first_name: str) -> str:
     )
     return (
         f"👋 Hello **{user_first_name}**!\n\n"
-        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v2.0.0**.\n\n"
+        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v2.2.1**.\n\n"
         f"**System Capabilities:**\n"
         f"• **Active Upload Limit:** {mode_label}\n"
         f"• 📥 **Direct URLs:** 8-connection parallel chunk downloading for max speed.\n"
@@ -370,7 +370,7 @@ async def status_handler(client: Client, message: Message):
     max_size_label = "4.0 GB (Hybrid Premium)" if Config.is_premium_enabled() else "2.0 GB (Bot Only)"
 
     status_text = (
-        f"📊 **System Status & Health (v2.0.0)**\n\n"
+        f"📊 **System Status & Health (v2.2.1)**\n\n"
         f"• **Active Downloads:** `{ACTIVE_DOWNLOADS_COUNT} / {Config.MAX_CONCURRENT_DOWNLOADS}`\n"
         f"• **Max Upload Size:** `{max_size_label}`\n"
         f"• **Direct Engine:** `8-Connection Parallel Range (aiohttp)`\n"

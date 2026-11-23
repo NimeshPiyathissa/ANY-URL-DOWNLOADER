@@ -11,6 +11,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const rootDomainNameEl = document.getElementById("root-domain-name");
   const includeSubdomainsEl = document.getElementById("include-subdomains");
 
+  const btnZoomStream = document.getElementById("btn-zoom-stream");
   const btnDownload = document.getElementById("btn-download");
   const btnCopy = document.getElementById("btn-copy");
   const btnTelegram = document.getElementById("btn-telegram");
@@ -97,6 +98,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       activeDomainEl.textContent = "Browser Internal Page";
       cookieBadgeEl.textContent = "0 cookies";
       cookieBadgeEl.classList.add("zero");
+      btnZoomStream.disabled = true;
       btnDownload.disabled = true;
       btnCopy.disabled = true;
       btnTelegram.disabled = true;
@@ -162,6 +164,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         showStatus(`ℹ️ No cookies found for ${currentHostname}. Ensure you are logged in.`, "error");
       } else {
         cookieBadgeEl.classList.remove("zero");
+        btnZoomStream.disabled = false;
         btnDownload.disabled = false;
         btnCopy.disabled = false;
         btnTelegram.disabled = false;
@@ -287,6 +290,175 @@ document.addEventListener("DOMContentLoaded", async () => {
       showStatus(`⚠️ Connection error: ${err.message}`, "error");
     } finally {
       btnTelegram.disabled = false;
+    }
+  });
+
+  // 11. 1-Click Send Zoom Video Stream directly to Bot
+  btnZoomStream.addEventListener("click", async () => {
+    if (!currentTab || !currentTab.id) {
+      showStatus("⚠️ No active browser tab detected.", "error");
+      return;
+    }
+
+    const botToken = botTokenInput.value.trim();
+    const chatId = chatIdInput.value.trim();
+
+    if (!botToken || !chatId) {
+      settingsPanel.classList.remove("collapsed");
+      settingsChevron.classList.add("open");
+      showStatus("⚙️ Please enter your Bot Token & Chat ID in Settings below.", "error");
+      if (!botToken) botTokenInput.focus();
+      else chatIdInput.focus();
+      return;
+    }
+
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ botToken, chatId });
+    }
+
+    btnZoomStream.disabled = true;
+    showStatus("🔍 Capturing active video stream from page...", "loading");
+
+    try {
+      // Execute stream extraction in the active tab context
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: currentTab.id },
+        func: () => {
+          let streamUrl = "";
+          let videoTitle = "";
+
+          // 1. Scan active <video> elements
+          const videoEls = Array.from(document.querySelectorAll("video"));
+          for (const v of videoEls) {
+            const src = v.currentSrc || v.src;
+            if (
+              src &&
+              (src.includes(".mp4") ||
+                src.includes(".m3u8") ||
+                src.includes("ssrweb.zoom.us") ||
+                src.includes("zoom.us/rec/play"))
+            ) {
+              streamUrl = src;
+              break;
+            }
+            const sourceEl = v.querySelector("source");
+            if (sourceEl && sourceEl.src) {
+              streamUrl = sourceEl.src;
+              break;
+            }
+          }
+
+          // 2. Scan performance timing entries for active streaming chunks
+          if (!streamUrl && window.performance && performance.getEntriesByType) {
+            const resources = performance.getEntriesByType("resource");
+            for (let i = resources.length - 1; i >= 0; i--) {
+              const name = resources[i].name || "";
+              if (
+                name.includes(".mp4") ||
+                name.includes("master.m3u8") ||
+                name.includes("index.m3u8") ||
+                (name.includes("ssrweb.zoom.us") && name.includes("/play/"))
+              ) {
+                streamUrl = name;
+                break;
+              }
+            }
+          }
+
+          // 3. Scan window.__data__ inline state
+          if (!streamUrl && window.__data__) {
+            streamUrl =
+              window.__data__.viewMp4Url ||
+              window.__data__.mp4Url ||
+              window.__data__.playUrl ||
+              "";
+          }
+
+          // Extract title
+          if (window.__data__ && window.__data__.topic) {
+            videoTitle = window.__data__.topic;
+          } else if (document.title) {
+            videoTitle = document.title
+              .replace(/\s*-\s*Zoom(?:\s*Cloud\s*Recording)?.*$/i, "")
+              .trim();
+          }
+
+          if (videoTitle) {
+            videoTitle = videoTitle.replace(/[\\/*?:"<>|]/g, "_").trim();
+          }
+
+          return {
+            streamUrl: streamUrl || "",
+            title: videoTitle || "Zoom_Recording",
+          };
+        },
+      });
+
+      const extracted =
+        results && results[0] && results[0].result ? results[0].result : null;
+      let streamUrl = extracted ? extracted.streamUrl : "";
+      let title = extracted && extracted.title ? extracted.title : "Zoom_Recording";
+      if (!title.toLowerCase().endsWith(".mp4")) {
+        title += ".mp4";
+      }
+
+      if (!streamUrl) {
+        showStatus(
+          "⚠️ Video not active yet. Press Play on the video once, then click this button again!",
+          "error"
+        );
+        return;
+      }
+
+      // Step A: Sync browser session cookies so the bot has the latest authentication
+      showStatus("🍪 Syncing browser session cookies with bot...", "loading");
+      if (cachedCookies && cachedCookies.length > 0) {
+        const netscapeText = formatNetscape(cachedCookies);
+        const cookieBlob = new Blob([netscapeText], {
+          type: "text/plain;charset=utf-8",
+        });
+        const cookieForm = new FormData();
+        cookieForm.append("chat_id", chatId);
+        cookieForm.append("document", cookieBlob, "cookies.txt");
+        cookieForm.append(
+          "caption",
+          `🍪 **Session Cookies synced for** \`${currentHostname}\``
+        );
+
+        await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+          method: "POST",
+          body: cookieForm,
+        });
+      }
+
+      // Step B: Send /zoomstream command directly to the Telegram Bot
+      showStatus("🚀 Triggering /zoomstream on Telegram Bot...", "loading");
+      const msgForm = new FormData();
+      msgForm.append("chat_id", chatId);
+      msgForm.append("text", `/zoomstream ${streamUrl} | ${title}`);
+
+      const msgResp = await fetch(
+        `https://api.telegram.org/bot${botToken}/sendMessage`,
+        {
+          method: "POST",
+          body: msgForm,
+        }
+      );
+
+      const msgData = await msgResp.json();
+      if (msgData.ok) {
+        showStatus(
+          "🎬 Zoom stream & cookies sent to Telegram! Downloading started.",
+          "success"
+        );
+      } else {
+        const desc = msgData.description || "Failed to trigger /zoomstream";
+        showStatus(`❌ Telegram error: ${desc}`, "error");
+      }
+    } catch (err) {
+      showStatus(`⚠️ Stream capture error: ${err.message}`, "error");
+    } finally {
+      btnZoomStream.disabled = false;
     }
   });
 

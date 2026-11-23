@@ -888,9 +888,10 @@ class _StreamDownloadState:
 async def download_stream_or_zoom(
     url: str,
     output_dir: Path,
-    passcode: Optional[str],
-    custom_filename: Optional[str],
-    progress_tracker
+    passcode: Optional[str] = None,
+    custom_filename: Optional[str] = None,
+    progress_tracker=None,
+    extra_headers: Optional[dict] = None,
 ) -> Path:
     """
     High-Speed Unified yt-dlp downloader for Zoom recordings and HLS/DASH streams.
@@ -944,6 +945,8 @@ async def download_stream_or_zoom(
     }
     if is_zoom_url(url):
         http_headers["Referer"] = url
+    if extra_headers:
+        http_headers.update(extra_headers)
 
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -1035,12 +1038,15 @@ async def download_stream_or_zoom(
                     cookies_path=Config.COOKIES_FILE if Config.COOKIES_FILE.is_file() else None,
                 )
                 final_name = custom_filename or (f"{zoom_title}.mp4" if zoom_title else None)
+                fb_hdrs = dict(fallback_hdrs)
+                if extra_headers:
+                    fb_hdrs.update(extra_headers)
                 return await download_direct_url(
                     url=mp4_url,
                     output_dir=output_dir,
                     custom_filename=final_name,
                     progress_tracker=progress_tracker,
-                    extra_headers=fallback_hdrs,
+                    extra_headers=fb_hdrs,
                 )
             except ZoomPasscodeRequiredError:
                 raise

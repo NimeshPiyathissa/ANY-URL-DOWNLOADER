@@ -50,8 +50,8 @@ class Config:
     # Dynamic maximum file size based on presence of Premium user session
     MAX_FILE_SIZE: int = PREMIUM_MAX_SIZE if USER_SESSION_STRING else BOT_MAX_SIZE
 
-    # Optional cookies file for yt-dlp authenticated sessions
-    COOKIES_FILE: Path = Path("cookies.txt")
+    # Absolute cookies file path for yt-dlp authenticated sessions & systemd compatibility
+    COOKIES_FILE: Path = Path(__file__).resolve().parent / "cookies.txt"
 
     # Standard browser User-Agent to prevent 403 Forbidden blocks
     DEFAULT_USER_AGENT: str = (

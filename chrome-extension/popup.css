@@ -294,6 +294,18 @@ body {
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
 }
 
+.btn-zoom {
+  background: linear-gradient(135deg, #0284c7 0%, #2563eb 50%, #4f46e5 100%);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+}
+
+.btn-zoom:hover:not(:disabled) {
+  filter: brightness(1.15);
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
+}
+
 .btn-secondary {
   background: rgba(255, 255, 255, 0.07);
   color: #f1f5f9;

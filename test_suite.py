@@ -35,7 +35,7 @@ from bot import parse_user_input
 
 def run_tests():
     print("=" * 60)
-    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.2.1)")
+    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.3.0)")
     print("=" * 60)
 
     # 1. Test formatters
@@ -248,12 +248,26 @@ def run_tests():
     dummy_cookie_file.unlink(missing_ok=True)
     print("✓ Netscape cookies.txt parser verified")
 
-    # 17. Test bot.py has document_upload_handler for cookies.txt
+    # 17. Test bot.py has document_upload_handler for cookies.txt (with wildcard support)
     assert "document_upload_handler" in bot_code, "bot.py must include document_upload_handler"
     assert "cookies.txt" in bot_code, "bot.py must handle cookies.txt upload"
-    print("✓ Telegram cookies.txt upload handler verified in bot.py")
+    assert 'startswith("cookies")' in bot_code, "bot.py must support cookies (1).txt filenames"
+    print("✓ Telegram cookies.txt upload handler with wildcard support verified in bot.py")
 
-    # 18. Test thread-safe ProgressTracker in bot.py (v2.2.0)
+    # 18. Test /zoomstream command & absolute cookies path (v2.3.0)
+    assert Config.COOKIES_FILE.is_absolute(), "Config.COOKIES_FILE must be an absolute path"
+    assert "zoomstream_handler" in bot_code, "bot.py must include zoomstream_handler"
+    assert "execute_download_pipeline" in bot_code, "bot.py must include execute_download_pipeline"
+    print("✓ /zoomstream command handler and absolute COOKIES_FILE verified in bot.py & config.py")
+
+    # 19. Test Chrome Extension Manifest V3 configuration (v2.3.0)
+    manifest_code = Path("chrome-extension/manifest.json").read_text(encoding="utf-8")
+    assert '"scripting"' in manifest_code, "manifest.json must include scripting permission"
+    assert '"webRequest"' in manifest_code, "manifest.json must include webRequest permission"
+    assert '"1.1.0"' in manifest_code, "manifest.json version must be 1.1.0"
+    print("✓ Chrome Extension Manifest V3 scripting & webRequest permissions verified")
+
+    # 20. Test thread-safe ProgressTracker in bot.py (v2.2.0)
     assert "def update(" in bot_code, "bot.py ProgressTracker must have universal update method"
     assert "def update_download_threadsafe(" in bot_code, "bot.py ProgressTracker must have threadsafe method"
     assert "asyncio.run_coroutine_threadsafe" in bot_code, "bot.py must use run_coroutine_threadsafe for worker threads"
@@ -297,7 +311,7 @@ def run_tests():
         shutil.rmtree(test_dir, ignore_errors=True)
 
     asyncio.run(test_ffmpeg())
-    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.2.1)!\n")
+    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.3.0)!\n")
 
 
 if __name__ == "__main__":

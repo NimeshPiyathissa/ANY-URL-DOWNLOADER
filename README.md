@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.2.1"><img src="https://img.shields.io/badge/Release-v2.2.1-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.2.1"/></a>
+  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.3.0"><img src="https://img.shields.io/badge/Release-v2.3.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.3.0"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://github.com/Mayuri-Chan/pyrofork"><img src="https://img.shields.io/badge/Pyrofork-MTProto%20v2-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Pyrofork MTProto"/></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-32x%20Fragments%20%2B%20aria2c-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp & aria2c"/></a>
@@ -22,6 +22,7 @@
 
 ## 📑 Table of Contents
 
+- [What's New in v2.3.0](#-whats-new-in-v230)
 - [What's New in v2.2.1](#-whats-new-in-v221)
 - [What's New in v2.2.0](#-whats-new-in-v220)
 - [What's New in v2.1.0](#-whats-new-in-v210)
@@ -35,6 +36,16 @@
 - [Step-by-Step Ubuntu VPS Setup](#-step-by-step-ubuntu-vps-setup)
 - [Troubleshooting & FAQ](#-troubleshooting--faq)
 - [License & Contributions](#-license--contributions)
+
+---
+
+## 🚀 What's New in v2.3.0
+
+* **🎬 1-Click Zoom Video Stream Capture in Browser Extension:** Added a dedicated **`🎬 Send Zoom Video to Bot`** button in the Chrome/Edge extension. When viewing any protected or CAPTCHA-locked Zoom recording in your browser, one click extracts the active playing `<video>` stream URL (`.mp4` / `.m3u8`), auto-syncs your browser session cookies, and commands the bot to download the video directly—completely bypassing all server-side bot/CAPTCHA blocks!
+* **⚡ New Telegram `/zoomstream` Command:** Introduced `/zoomstream <stream_url> | <filename.mp4>` in `bot.py` with automatic `Referer: https://us06web.zoom.us/` and `cookies.txt` header injection for instantaneous stream processing.
+* **🍪 Robust Cookie Filename Matching:** `document_upload_handler` now accepts any text file starting with `cookies` (e.g. `cookies.txt`, `cookies (1).txt`, `cookies (2).txt`), saving directly to the resolved absolute path.
+* **📍 Absolute `cookies.txt` Path Resolution:** Updated `Config.COOKIES_FILE` in `config.py` and `downloader.py` to resolve via `Path(__file__).resolve().parent / "cookies.txt"` for 100% reliable systemd VPS daemon operation.
+* **📦 Upgraded Manifest V3 Extension:** Added `"scripting"` and `"webRequest"` permissions to `chrome-extension/manifest.json` (v1.1.0) for in-tab media inspection.
 
 ---
 
@@ -190,6 +201,7 @@ Welcome to Any URL Downloader v2.0.0
 | `/start` | Open the interactive main menu with navigation buttons and system status. |
 | `/help` | Detailed guide with copy-ready examples for all supported links. |
 | `/status` | Real-time server health: concurrency, upload mode (2GB vs 4GB), and engine metrics. |
+| `/zoomstream` | Directly download an extracted Zoom MP4/M3U8 stream with authenticated headers (`/zoomstream <url> \| <name>`). |
 
 ### Download Input Formats
 
@@ -204,6 +216,7 @@ Welcome to Any URL Downloader v2.0.0
 | **Zoom Recording** (Interactive) | `Zoom_URL` | `https://us02web.zoom.us/rec/share/abc123xyz` *(Prompts in chat)* |
 | **Zoom Recording** (Inline Passcode) | `Zoom_URL \| passcode` | `https://us02web.zoom.us/rec/share/abc123xyz \| Pass@123` |
 | **Zoom Recording** (Pass + Name) | `Zoom_URL \| pass \| name.mp4` | `https://us02web.zoom.us/rec/share/abc123xyz \| Pass@123 \| Class.mp4` |
+| **Zoom Direct Stream** (Browser Capture) | `/zoomstream URL \| name.mp4` | `/zoomstream https://ssrweb.zoom.us/rec/play/123.mp4?sig=abc \| Lecture.mp4` |
 
 ---
 

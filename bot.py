@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -29,6 +30,7 @@ from downloader import (
     is_stream_url,
     is_zoom_url,
     ZoomPasscodeRequiredError,
+    _load_netscape_cookies,
 )
 from utils import (
     clean_directory,
@@ -306,7 +308,7 @@ def build_welcome_text(user_first_name: str) -> str:
     )
     return (
         f"👋 Hello **{user_first_name}**!\n\n"
-        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v2.2.1**.\n\n"
+        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v2.3.0**.\n\n"
         f"**System Capabilities:**\n"
         f"• **Active Upload Limit:** {mode_label}\n"
         f"• 📥 **Direct URLs:** 8-connection parallel chunk downloading for max speed.\n"
@@ -370,7 +372,7 @@ async def status_handler(client: Client, message: Message):
     max_size_label = "4.0 GB (Hybrid Premium)" if Config.is_premium_enabled() else "2.0 GB (Bot Only)"
 
     status_text = (
-        f"📊 **System Status & Health (v2.2.1)**\n\n"
+        f"📊 **System Status & Health (v2.3.0)**\n\n"
         f"• **Active Downloads:** `{ACTIVE_DOWNLOADS_COUNT} / {Config.MAX_CONCURRENT_DOWNLOADS}`\n"
         f"• **Max Upload Size:** `{max_size_label}`\n"
         f"• **Direct Engine:** `8-Connection Parallel Range (aiohttp)`\n"
@@ -544,24 +546,26 @@ async def callback_query_handler(client: Client, query: CallbackQuery):
 
 @bot.on_message(filters.document & filters.private)
 async def document_upload_handler(client: Client, message: Message):
-    """Handles Telegram document uploads, specifically for updating cookies.txt."""
+    """Handles Telegram document uploads, specifically for updating cookies.txt (accepting cookies.txt, cookies (1).txt, etc.)."""
     user = message.from_user
     if not is_authorized(user.id):
         await message.reply_text("⛔ **Access Denied.**")
         return
 
     doc = message.document
-    if doc.file_name and doc.file_name.lower().endswith("cookies.txt"):
+    file_name = (doc.file_name or "").lower()
+    is_cookies = file_name == "cookies.txt" or (file_name.startswith("cookies") and file_name.endswith(".txt"))
+    if is_cookies:
         status_reply = await message.reply_text("⏳ Saving `cookies.txt`...")
-        target_path = Path("cookies.txt")
+        target_path = Config.COOKIES_FILE
         await client.download_media(message, file_name=str(target_path))
         await status_reply.edit_text(
-            "✅ **cookies.txt updated!**\n\n"
+            f"✅ **cookies.txt updated!** (from `{doc.file_name}`)\n\n"
             "Protected Zoom recordings will now use your session cookies automatically."
         )
     else:
         await message.reply_text(
-            "ℹ️ To update Zoom browser cookies, send a file named `cookies.txt` directly to this chat."
+            "ℹ️ To update Zoom browser cookies, send a file named `cookies.txt` (or `cookies (1).txt`) directly to this chat."
         )
 
 
@@ -715,6 +719,32 @@ async def download_request_handler(client: Client, message: Message):
                 except Exception:
                     pass
 
+    # Pass to unified download pipeline
+    await execute_download_pipeline(
+        client=client,
+        message=message,
+        url=url,
+        custom_filename=custom_filename,
+        passcode=passcode,
+    )
+
+
+async def execute_download_pipeline(
+    client: Client,
+    message: Message,
+    url: str,
+    custom_filename: Optional[str] = None,
+    passcode: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
+    dl_label: Optional[str] = None,
+):
+    """
+    Unified high-speed download, thumbnail, caption, and 2GB/4GB hybrid upload pipeline.
+    Invoked by both url_message_handler and zoomstream_handler.
+    """
+    global ACTIVE_DOWNLOADS_COUNT
+    user = message.from_user
+
     # Create status message
     status_msg = await message.reply_text("⏳ **Queued:** Waiting for an available download slot...")
 
@@ -738,7 +768,9 @@ async def download_request_handler(client: Client, message: Message):
             is_stream = is_stream_url(url)
             is_gdrive = is_gdrive_url(url)
 
-            if is_zoom:
+            if dl_label:
+                dl_type = dl_label
+            elif is_zoom:
                 dl_type = "Zoom Cloud Recording"
             elif is_stream:
                 dl_type = "HLS/DASH Stream"
@@ -757,6 +789,7 @@ async def download_request_handler(client: Client, message: Message):
                         passcode=passcode,
                         custom_filename=custom_filename,
                         progress_tracker=progress,
+                        extra_headers=extra_headers,
                     )
                 elif is_gdrive:
                     downloaded_file = await download_gdrive_file(
@@ -771,6 +804,7 @@ async def download_request_handler(client: Client, message: Message):
                         output_dir=task_dir,
                         custom_filename=custom_filename,
                         progress_tracker=progress,
+                        extra_headers=extra_headers,
                     )
             except ZoomPasscodeRequiredError:
                 # Prompt user in chat for the Zoom Passcode with Try Without Passcode & Cancel buttons
@@ -812,6 +846,7 @@ async def download_request_handler(client: Client, message: Message):
                     passcode=retry_passcode,
                     custom_filename=custom_filename,
                     progress_tracker=progress,
+                    extra_headers=extra_headers,
                 )
 
             # Validate file existence and size
@@ -1012,6 +1047,61 @@ async def download_request_handler(client: Client, message: Message):
         ACTIVE_DOWNLOADS_COUNT = max(0, ACTIVE_DOWNLOADS_COUNT - 1)
         # 5. Mandatory Workspace Cleanup (Guarantee temporary files are removed immediately)
         clean_directory(task_dir)
+
+
+@bot.on_message(filters.command("zoomstream") & filters.private)
+async def zoomstream_handler(client: Client, message: Message):
+    """
+    Direct Zoom stream downloader.
+    Receives direct MP4 or M3U8 video streams captured by the Chrome/Edge extension.
+    Attaches Referer: https://us06web.zoom.us/ and cookies from cookies.txt.
+    """
+    user = message.from_user
+    if not is_authorized(user.id):
+        await message.reply_text("⛔ **Access Denied.**")
+        return
+
+    raw_args = message.text[len("/zoomstream"):].strip()
+    if not raw_args:
+        await message.reply_text(
+            "ℹ️ **Usage:** `/zoomstream <direct_video_url> | <filename.mp4>`\n\n"
+            "💡 **1-Click Extension:** Use the *Any URL Downloader* Chrome/Edge extension on any unlocked Zoom page "
+            "and click **`🎬 Send Zoom Video to Bot`** to trigger this automatically!"
+        )
+        return
+
+    parts = [p.strip() for p in raw_args.split("|") if p.strip()]
+    stream_url = parts[0]
+    custom_name = parts[1] if len(parts) > 1 else None
+
+    if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+        await message.reply_text("⚠️ **Invalid URL:** Please provide a valid HTTP/HTTPS video stream URL.")
+        return
+
+    if custom_name and not Path(custom_name).suffix:
+        custom_name = f"{custom_name}.mp4"
+
+    # Prepare Zoom Referer and session Cookie headers
+    parsed = urllib.parse.urlparse(stream_url)
+    referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+    extra_headers = {
+        "User-Agent": Config.DEFAULT_USER_AGENT,
+        "Referer": referer,
+    }
+    if Config.COOKIES_FILE.is_file():
+        cookie_dict = _load_netscape_cookies(Config.COOKIES_FILE)
+        if cookie_dict:
+            extra_headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+
+    await execute_download_pipeline(
+        client=client,
+        message=message,
+        url=stream_url,
+        custom_filename=custom_name,
+        passcode=None,
+        extra_headers=extra_headers,
+        dl_label="Zoom Direct Stream Capture",
+    )
 
 
 async def main():

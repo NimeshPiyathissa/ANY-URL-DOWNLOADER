@@ -5,11 +5,11 @@
 <h1 align="center">⚡ ANY URL, HLS (.m3u8), ZOOM & GOOGLE DRIVE DOWNLOADER BOT</h1>
 
 <p align="center">
-  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 8-Connection Parallel Range Engine, 16-Fragment HLS/DASH Concurrency, Interactive Inline UI, In-Chat Zoom Passcode Prompts, and One-Command Systemd Deployment.</b>
+  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 8-Connection Parallel Range Engine, 16-Fragment HLS/DASH Concurrency, Resilient Zoom Web-Fallback Extractor, Telegram cookies.txt Upload, and One-Command Systemd Deployment.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.0.0"><img src="https://img.shields.io/badge/Release-v2.0.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.0.0"/></a>
+  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.1.0"><img src="https://img.shields.io/badge/Release-v2.1.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.1.0"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://github.com/Mayuri-Chan/pyrofork"><img src="https://img.shields.io/badge/Pyrofork-MTProto%20v2-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Pyrofork MTProto"/></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-16x%20Fragments-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp"/></a>
@@ -22,7 +22,7 @@
 
 ## 📑 Table of Contents
 
-- [What's New in v2.0.0](#-whats-new-in-v200)
+- [What's New in v2.1.0](#-whats-new-in-v210)
 - [Architecture & Upload Modes](#-architecture--upload-modes)
 - [Key Features](#-key-features)
 - [Interactive UI & User Experience](#-interactive-ui--user-experience)
@@ -35,12 +35,14 @@
 
 ---
 
-## 🚀 What's New in v2.0.0
+## 🚀 What's New in v2.1.0
 
+* **🔄 Resilient Zoom Web-Fallback Extractor:** When `yt-dlp` raises `Unable to extract data` or encounter password blocks, the bot automatically switches to an in-house asynchronous `aiohttp` web parser that validates passcodes via `/rec/validate_meet_passwd` and extracts direct MP4 URLs from Zoom page state.
+* **🍪 Direct Telegram `cookies.txt` Upload:** Authorized users can send a `cookies.txt` file directly in the Telegram chat; the bot automatically saves it and applies your session cookies to restricted institutional Zoom recordings.
+* **🔐 Interactive In-Chat Zoom Passcode Prompt:** When a protected Zoom recording link is detected, the bot asks for the passcode directly in chat with `⏭️ Try Without Passcode` and `❌ Cancel` buttons.
 * **⚡ 8-Connection Multi-Range Direct Downloader:** Parallel chunk downloading utilizing up to 8 simultaneous byte-range connections and 1MB buffers for maximum VPS bandwidth saturation.
 * **📡 16-Fragment HLS/DASH Concurrency:** Native Python segment downloading (`hls_prefer_native: True`) with 16 concurrent fragments and 10MB chunk buffers, completely eliminating `ffmpeg code 255` errors.
 * **📁 Native Google Drive Engine:** Direct integration with `gdown` supporting public files, shared folders, confirmation token bypass, and live progress reporting.
-* **🔐 Interactive Zoom Passcode Prompt:** Send a protected Zoom recording link without a password, and the bot will ask for the passcode directly in chat with an interactive `❌ Cancel` button (2-minute auto-timeout).
 * **📝 Interactive Post-Download Caption Prompt:** Send a custom Telegram caption within 30 seconds of download completion, or tap `⏭️ Use Default Filename` to proceed immediately.
 * **📊 Fragment-Aware Live Progress Bars:** Displays clean visual progress gauges (`[██████░░░░] 60.0%`), real-time speed (`MB/s`), downloaded size vs total size, ETA countdown, and fragment index (`12 / 20`).
 * **🛠️ One-Command Systemd Installer (`setup_service.sh`):** Automates user detection, environment verification, systemd unit generation, enabling, and service start in a single command.

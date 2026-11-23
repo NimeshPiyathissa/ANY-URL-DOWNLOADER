@@ -27,6 +27,7 @@ from downloader import (
     is_gdrive_url,
     is_stream_url,
     is_zoom_url,
+    ZoomPasscodeRequiredError,
 )
 from utils import (
     clean_directory,
@@ -374,18 +375,19 @@ async def callback_query_handler(client: Client, query: CallbackQuery):
     elif data == "help_zoom":
         text = (
             "🔐 **Zoom Cloud Recording Guide**\n\n"
-            "The bot provides two convenient ways to download Zoom recordings:\n\n"
-            "**Method A — Interactive Passcode Prompt (New in v2.0):**\n"
-            "1. Simply send your Zoom link:\n"
-            "   `https://us02web.zoom.us/rec/share/abc123xyz`\n"
-            "2. If protected, the bot will prompt: *'Please reply with the Zoom Passcode now'*\n"
-            "3. Send your passcode in the chat and download starts immediately!\n\n"
-            "**Method B — Inline Pipe Syntax:**\n"
+            "The bot provides multiple resilient ways to download Zoom recordings:\n\n"
+            "**1. Interactive In-Chat Passcode Prompt (New):**\n"
+            "• Just send your Zoom link: `https://us02web.zoom.us/rec/share/...`\n"
+            "• If passcode-protected, the bot automatically prompts you in chat.\n"
+            "• Simply reply with the passcode (or tap *'Try Without Passcode'*).\n\n"
+            "**2. Inline Pipe Syntax:**\n"
             "• `Zoom_URL | passcode`\n"
             "• `Zoom_URL | passcode | Lecture_01.mp4`\n\n"
-            "💡 **Institutional Zoom Links (403 Forbidden):**\n"
-            "If your university/work restricts recordings, place an authenticated Netscape `cookies.txt` "
-            "file in the bot root directory. The bot will use it automatically."
+            "**3. Direct Telegram cookies.txt Upload (New in v2.1):**\n"
+            "• For university or SSO enterprise Zoom recordings, export your browser cookies using "
+            "an extension like *Get cookies.txt LOCALLY*.\n"
+            "• **Simply send the `cookies.txt` file directly to this bot in Telegram!**\n"
+            "• The bot saves it immediately and uses your session cookies for private recordings."
         )
         await query.message.edit_text(text, reply_markup=get_back_button())
         await query.answer()
@@ -440,7 +442,15 @@ async def callback_query_handler(client: Client, query: CallbackQuery):
         await query.message.edit_text(status_text, reply_markup=get_back_button())
         await query.answer()
 
-    # 2. Cancel Zoom Passcode Waiting
+    # 2. Cancel or Bypass Zoom Passcode Waiting
+    elif data.startswith("zoom_no_passcode_"):
+        uid = int(data.split("_")[-1])
+        if uid == user.id and uid in PASSCODE_WAITERS:
+            fut = PASSCODE_WAITERS[uid]
+            if not fut.done():
+                fut.set_result("NO_PASSCODE")
+            await query.answer("Proceeding without passcode...")
+
     elif data.startswith("cancel_zoom_"):
         uid = int(data.split("_")[-1])
         if uid == user.id and uid in PASSCODE_WAITERS:
@@ -469,6 +479,33 @@ async def callback_query_handler(client: Client, query: CallbackQuery):
             if not fut.done():
                 fut.set_result("CANCEL")
             await query.answer("Upload cancelled.")
+
+
+# ==============================================================================
+# Document Upload Handler (cookies.txt management)
+# ==============================================================================
+
+@bot.on_message(filters.document & filters.private)
+async def document_upload_handler(client: Client, message: Message):
+    """Handles Telegram document uploads, specifically for updating cookies.txt."""
+    user = message.from_user
+    if not is_authorized(user.id):
+        await message.reply_text("⛔ **Access Denied.**")
+        return
+
+    doc = message.document
+    if doc.file_name and doc.file_name.lower().endswith("cookies.txt"):
+        status_reply = await message.reply_text("⏳ Saving `cookies.txt`...")
+        target_path = Path("cookies.txt")
+        await client.download_media(message, file_name=str(target_path))
+        await status_reply.edit_text(
+            "✅ **cookies.txt updated!**\n\n"
+            "Protected Zoom recordings will now use your session cookies automatically."
+        )
+    else:
+        await message.reply_text(
+            "ℹ️ To update Zoom browser cookies, send a file named `cookies.txt` directly to this chat."
+        )
 
 
 # ==============================================================================
@@ -655,25 +692,67 @@ async def download_request_handler(client: Client, message: Message):
 
             logger.info(f"Task {task_id}: Starting {dl_type} for URL: {url}")
 
-            if is_zoom or is_stream:
+            try:
+                if is_zoom or is_stream:
+                    downloaded_file = await download_stream_or_zoom(
+                        url=url,
+                        output_dir=task_dir,
+                        passcode=passcode,
+                        custom_filename=custom_filename,
+                        progress_tracker=progress,
+                    )
+                elif is_gdrive:
+                    downloaded_file = await download_gdrive_file(
+                        url=url,
+                        output_dir=task_dir,
+                        custom_filename=custom_filename,
+                        progress_tracker=progress,
+                    )
+                else:
+                    downloaded_file = await download_direct_url(
+                        url=url,
+                        output_dir=task_dir,
+                        custom_filename=custom_filename,
+                        progress_tracker=progress,
+                    )
+            except ZoomPasscodeRequiredError:
+                # Prompt user in chat for the Zoom Passcode with Try Without Passcode & Cancel buttons
+                passcode_future = asyncio.get_running_loop().create_future()
+                PASSCODE_WAITERS[user.id] = passcode_future
+
+                prompt_msg = await message.reply_text(
+                    "🔐 **Zoom requires a Passcode (or session verification) for this recording.**\n\n"
+                    "Please reply with the Zoom Passcode now, or tap below:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("⏭️ Try Without Passcode", callback_data=f"zoom_no_passcode_{user.id}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_zoom_{user.id}"),
+                        ]
+                    ])
+                )
+
+                try:
+                    captured_reply = await asyncio.wait_for(passcode_future, timeout=120.0)
+                except asyncio.TimeoutError:
+                    await prompt_msg.edit_text("⏱️ **Passcode entry timed out.** Please resend the Zoom link.")
+                    return
+                except asyncio.CancelledError:
+                    await prompt_msg.edit_text("❌ **Zoom download cancelled.**")
+                    return
+                finally:
+                    PASSCODE_WAITERS.pop(user.id, None)
+                    try:
+                        await prompt_msg.delete()
+                    except Exception:
+                        pass
+
+                retry_passcode = None if captured_reply == "NO_PASSCODE" else captured_reply.strip()
+                await status_msg.edit_text("🔄 **Retrying Zoom download with provided credentials...**")
+
                 downloaded_file = await download_stream_or_zoom(
                     url=url,
                     output_dir=task_dir,
-                    passcode=passcode,
-                    custom_filename=custom_filename,
-                    progress_tracker=progress,
-                )
-            elif is_gdrive:
-                downloaded_file = await download_gdrive_file(
-                    url=url,
-                    output_dir=task_dir,
-                    custom_filename=custom_filename,
-                    progress_tracker=progress,
-                )
-            else:
-                downloaded_file = await download_direct_url(
-                    url=url,
-                    output_dir=task_dir,
+                    passcode=retry_passcode,
                     custom_filename=custom_filename,
                     progress_tracker=progress,
                 )

@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import math
 import os
@@ -32,6 +33,11 @@ GDRIVE_PATTERN = re.compile(
 )
 
 
+class ZoomPasscodeRequiredError(ValueError):
+    """Raised when a Zoom cloud recording requires a passcode or authentication."""
+    pass
+
+
 def is_zoom_url(url: str) -> bool:
     """Check if the provided URL is a Zoom cloud recording link."""
     return bool(
@@ -54,6 +60,148 @@ def is_gdrive_url(url: str) -> bool:
         or ("drive.google.com" in url)
         or ("docs.google.com" in url and "/d/" in url)
     )
+
+
+def _load_netscape_cookies(cookies_path: Path) -> dict:
+    """Load standard Netscape cookies.txt file into a cookie dictionary."""
+    cookies = {}
+    if not cookies_path or not cookies_path.is_file():
+        return cookies
+
+    try:
+        with open(cookies_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    # parts: domain, flag, path, secure, expiration, name, value
+                    cookies[parts[5]] = parts[6]
+    except Exception as e:
+        logger.warning(f"Error reading cookies from {cookies_path}: {e}")
+
+    return cookies
+
+
+def _extract_zoom_mp4_and_title(page_html: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract direct MP4 streaming URL and meeting title from Zoom recording web page HTML."""
+    mp4_url: Optional[str] = None
+    title: Optional[str] = None
+
+    # Title extraction
+    title_match = (
+        re.search(r'topic["\']?\s*[:=]\s*["\']([^"\']+)["\']', page_html, re.IGNORECASE)
+        or re.search(r'<title>([^<]+)</title>', page_html, re.IGNORECASE)
+    )
+    if title_match:
+        raw_title = title_match.group(1).strip()
+        raw_title = re.sub(r"\s*-\s*Zoom(?:\s*Cloud\s*Recording)?.*$", "", raw_title, flags=re.IGNORECASE)
+        if raw_title:
+            title = sanitize_filename(raw_title)
+
+    # Search for streaming MP4 URL across Zoom Javascript state & DOM
+    patterns = [
+        r'viewMp4Url["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'mp4Url["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+        r'playUrl["\']?\s*[:=]\s*["\']([^"\']+\.mp4[^"\']*)["\']',
+        r'fileUrl["\']?\s*[:=]\s*["\']([^"\']+\.mp4[^"\']*)["\']',
+        r'<video[^>]+src=["\']([^"\']+)["\']',
+        r'<source[^>]+src=["\']([^"\']+)["\']',
+        r'["\'](https?://[^"\']+\.mp4(?:\?[^"\']*)?)["\']',
+    ]
+    for pat in patterns:
+        m = re.search(pat, page_html, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).replace("\\u0026", "&").replace("&amp;", "&")
+            candidate = html.unescape(candidate)
+            if candidate.startswith("http") and ".mp4" in candidate:
+                mp4_url = candidate
+                break
+
+    return mp4_url, title
+
+
+async def _fallback_zoom_mp4_url(
+    url: str,
+    passcode: Optional[str] = None,
+    cookies_path: Optional[Path] = None,
+) -> Tuple[str, Optional[str], dict]:
+    """
+    Resilient async aiohttp Zoom web-page fallback extractor.
+    Loads cookies from cookies.txt if present, submits passcode to /rec/validate_meet_passwd if needed,
+    and extracts the direct MP4 streaming URL from HTML/JSON state.
+    Returns: (mp4_url, extracted_title, headers)
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    base_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+    cookie_dict = {}
+    if cookies_path and cookies_path.is_file():
+        cookie_dict = _load_netscape_cookies(cookies_path)
+
+    headers = {
+        "User-Agent": Config.DEFAULT_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": base_origin + "/",
+    }
+
+    jar = aiohttp.CookieJar(unsafe=True)
+    timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_read=30)
+
+    async with aiohttp.ClientSession(cookie_jar=jar, headers=headers, timeout=timeout, cookies=cookie_dict) as session:
+        async with session.get(url, allow_redirects=True) as resp:
+            page_text = await resp.text(errors="ignore")
+
+        # Check if passcode submission is required
+        needs_passcode = bool(
+            "validate_meet_passwd" in page_text
+            or "meet_passwd" in page_text
+            or "password_input" in page_text
+            or (re.search(r'passcode|password', page_text, re.IGNORECASE) and "viewMp4Url" not in page_text and ".mp4" not in page_text)
+        )
+
+        if needs_passcode:
+            if not passcode:
+                raise ZoomPasscodeRequiredError(
+                    "🔐 This Zoom recording requires a passcode (or valid cookies.txt)."
+                )
+
+            # Extract meeting ID or form fields
+            meet_id_match = re.search(r'id["\']?\s*[:=]\s*["\']([a-zA-Z0-9_-]+)["\']', page_text)
+            meeting_id = meet_id_match.group(1) if meet_id_match else ""
+
+            validate_url = f"{base_origin}/rec/validate_meet_passwd"
+            post_data = {
+                "id": meeting_id,
+                "passwd": passcode.strip(),
+                "action": "view",
+            }
+
+            async with session.post(validate_url, data=post_data, allow_redirects=True) as post_resp:
+                post_text = await post_resp.text(errors="ignore")
+                # Also fetch original URL with updated cookies
+                async with session.get(url, allow_redirects=True) as follow_resp:
+                    follow_text = await follow_resp.text(errors="ignore")
+                page_text = post_text + "\n" + follow_text
+
+        mp4_url, title = _extract_zoom_mp4_and_title(page_text)
+        if not mp4_url:
+            if needs_passcode and passcode:
+                raise ValueError(
+                    "🔒 **Zoom Passcode Incorrect:** The meeting server rejected the provided passcode."
+                )
+            raise ValueError(
+                "⚠️ **Zoom Extraction Failed:** Could not locate direct MP4 stream on recording page. "
+                "If this is an institutional meeting, please upload your `cookies.txt` to the bot."
+            )
+
+        request_headers = {
+            "User-Agent": Config.DEFAULT_USER_AGENT,
+            "Referer": base_origin + "/",
+        }
+        return mp4_url, title, request_headers
 
 
 def _derive_stream_filename(url: str) -> str:
@@ -132,7 +280,8 @@ async def download_direct_url(
     url: str,
     output_dir: Path,
     custom_filename: Optional[str],
-    progress_tracker
+    progress_tracker,
+    extra_headers: Optional[dict] = None
 ) -> Path:
     """
     High-Speed Direct File Downloader with Multi-Connection Parallel Range support.
@@ -145,6 +294,9 @@ async def download_direct_url(
         "Accept": "*/*",
         "Accept-Encoding": "identity",
     }
+    if extra_headers:
+        headers.update(extra_headers)
+
     timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=180)
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
@@ -327,7 +479,6 @@ async def download_gdrive_file(
     monitor_task = asyncio.create_task(monitor_gdrive_progress())
 
     def run_gdown_sync() -> Optional[str]:
-        # gdown returns the path of the downloaded file or None
         output_arg = str(target_dest) if custom_filename else str(output_dir)
         return gdown.download(
             url=url,
@@ -337,7 +488,7 @@ async def download_gdrive_file(
         )
 
     try:
-        result_path_str = await asyncio.to_thread(run_gdown_sync)
+        await asyncio.to_thread(run_gdown_sync)
     except Exception as e:
         raise ValueError(f"⚠️ **Google Drive Download Failed:** {e}") from e
     finally:
@@ -402,7 +553,7 @@ async def download_stream_or_zoom(
     """
     High-Speed Unified yt-dlp downloader for Zoom recordings and HLS/DASH streams.
     Downloads 16 fragments concurrently with native HLS segment downloader and 10MB chunk buffers.
-    Calculates estimated total bytes and progress using fragment counts when total_bytes is None.
+    Features resilient Zoom fallback extraction via aiohttp web-parsing if yt-dlp fails.
     Enforces Config.MAX_FILE_SIZE.
     """
     state = _StreamDownloadState()
@@ -414,7 +565,6 @@ async def download_stream_or_zoom(
             state.downloaded_bytes = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
 
-            # Fragment tracking for HLS / DASH manifests
             frag_idx = d.get("fragment_index")
             frag_count = d.get("fragment_count")
             if frag_idx and frag_count and frag_count > 0:
@@ -460,11 +610,9 @@ async def download_stream_or_zoom(
         "http_headers": http_headers,
     }
 
-    # Pass passcode to yt-dlp if provided (Zoom recordings)
     if passcode:
         ydl_opts["videopassword"] = passcode.strip()
 
-    # Pass cookiefile if cookies.txt exists on disk
     if Config.COOKIES_FILE.is_file():
         ydl_opts["cookiefile"] = str(Config.COOKIES_FILE)
         logger.info(f"Using cookies file: {Config.COOKIES_FILE}")
@@ -484,7 +632,6 @@ async def download_stream_or_zoom(
             await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
 
     monitor_task = asyncio.create_task(monitor_progress())
-
     info_dict = None
 
     def run_ydl_sync():
@@ -497,20 +644,50 @@ async def download_stream_or_zoom(
         await asyncio.to_thread(run_ydl_sync)
     except (ExtractorError, DownloadError) as e:
         err_msg = str(e).lower()
+
+        # Check for Zoom-specific failures to invoke resilient web fallback
+        if is_zoom_url(url):
+            is_passcode_issue = (
+                "passcode" in err_msg or "password" in err_msg or "wrong passcode" in err_msg
+            )
+            is_extract_issue = "unable to extract" in err_msg or "extractor" in err_msg or "403" in err_msg
+
+            if (is_passcode_issue or is_extract_issue) and not passcode:
+                # Prompt user in chat for the passcode
+                raise ZoomPasscodeRequiredError(
+                    f"Zoom recording requires a passcode or session verification."
+                ) from e
+
+            logger.warning(f"yt-dlp failed on Zoom link ({e}). Attempting resilient aiohttp web fallback...")
+            try:
+                mp4_url, zoom_title, fallback_hdrs = await _fallback_zoom_mp4_url(
+                    url=url,
+                    passcode=passcode,
+                    cookies_path=Config.COOKIES_FILE if Config.COOKIES_FILE.is_file() else None,
+                )
+                final_name = custom_filename or (f"{zoom_title}.mp4" if zoom_title else None)
+                return await download_direct_url(
+                    url=mp4_url,
+                    output_dir=output_dir,
+                    custom_filename=final_name,
+                    progress_tracker=progress_tracker,
+                    extra_headers=fallback_hdrs,
+                )
+            except ZoomPasscodeRequiredError:
+                raise
+            except Exception as fb_err:
+                raise ValueError(
+                    f"⚠️ **Zoom Download Failed:** Both yt-dlp and fallback web extractor failed ({fb_err})"
+                ) from fb_err
+
+        # General error formatting
         if "larger than max-filesize" in err_msg:
             limit_str = format_bytes(Config.MAX_FILE_SIZE)
             raise ValueError(f"⚠️ **File Size Limit Exceeded:** The recording exceeds the maximum limit of {limit_str}.") from e
-        elif "passcode" in err_msg or "password" in err_msg or "wrong passcode" in err_msg:
-            raise ValueError(
-                "🔒 **Zoom Passcode Error:** This recording is protected by a passcode.\n"
-                "Please provide it in the format:\n"
-                "`<Zoom URL> | <passcode>`"
-            ) from e
         elif "403" in err_msg or "forbidden" in err_msg:
             raise ValueError(
-                "🚫 **Access Denied (403 Forbidden):**\n"
-                "The server has restricted access to this content.\n"
-                "💡 Tip: If you have valid browser cookies, save them to `cookies.txt` in the bot directory."
+                "🚫 **Access Denied (403 Forbidden):** The server restricted access to this content.\n"
+                "💡 Tip: Send your `cookies.txt` file directly to this bot in chat to authenticate."
             ) from e
         else:
             raise ValueError(f"⚠️ **Stream/Zoom Download Failed:** {e}") from e
@@ -537,7 +714,6 @@ async def download_stream_or_zoom(
     # Handle custom filename or derive from stream URL / Zoom metadata
     if custom_filename:
         safe_custom = sanitize_filename(custom_filename)
-        # Preserve extension if missing
         if not Path(safe_custom).suffix and primary_file.suffix:
             safe_custom = f"{safe_custom}{primary_file.suffix}"
         target_path = output_dir / safe_custom
@@ -545,7 +721,6 @@ async def download_stream_or_zoom(
             primary_file.rename(target_path)
             primary_file = target_path
     elif is_stream_url(url):
-        # For stream URLs, derive a meaningful filename from the URL path
         derived_name = _derive_stream_filename(url)
         target_path = output_dir / derived_name
         if target_path != primary_file:

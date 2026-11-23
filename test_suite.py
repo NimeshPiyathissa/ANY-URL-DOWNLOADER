@@ -20,6 +20,9 @@ from downloader import (
     is_gdrive_url,
     extract_filename_from_headers,
     _derive_stream_filename,
+    _extract_zoom_mp4_and_title,
+    _load_netscape_cookies,
+    ZoomPasscodeRequiredError,
 )
 from bot import parse_user_input
 
@@ -168,7 +171,39 @@ def run_tests():
     assert "systemctl enable any-url-bot.service" in setup_sh
     print("✓ setup_service.sh one-command systemd installer script verified")
 
-    # 16. Test clean_directory
+    # 16. Test Zoom fallback extractor & Netscape cookies loader (v2.1.0)
+    assert issubclass(ZoomPasscodeRequiredError, ValueError)
+    sample_zoom_html = """
+    <html>
+      <head><title>Quantum Computing Lecture - Zoom</title></head>
+      <body>
+        <script>
+          window.__data__ = {
+            topic: "Quantum Computing Lecture",
+            viewMp4Url: "https://ssrweb.zoom.us/rec/play/quantum_lecture.mp4?sig=123"
+          };
+        </script>
+      </body>
+    </html>
+    """
+    extracted_mp4, extracted_topic = _extract_zoom_mp4_and_title(sample_zoom_html)
+    assert extracted_mp4 == "https://ssrweb.zoom.us/rec/play/quantum_lecture.mp4?sig=123"
+    assert extracted_topic == "Quantum Computing Lecture"
+    print("✓ Zoom HTML MP4 & topic extraction verified")
+
+    dummy_cookie_file = Path("test_cookies_tmp.txt")
+    dummy_cookie_file.write_text(".zoom.us\tTRUE\t/\tTRUE\t1790000000\t_zm_session\txyz123\n", encoding="utf-8")
+    loaded_cookies = _load_netscape_cookies(dummy_cookie_file)
+    assert loaded_cookies.get("_zm_session") == "xyz123"
+    dummy_cookie_file.unlink(missing_ok=True)
+    print("✓ Netscape cookies.txt parser verified")
+
+    # 17. Test bot.py has document_upload_handler for cookies.txt
+    assert "document_upload_handler" in bot_code, "bot.py must include document_upload_handler"
+    assert "cookies.txt" in bot_code, "bot.py must handle cookies.txt upload"
+    print("✓ Telegram cookies.txt upload handler verified in bot.py")
+
+    # 18. Test clean_directory
     test_clean_dir = Path("test_clean_tmp")
     test_clean_dir.mkdir(exist_ok=True)
     (test_clean_dir / "dummy.txt").write_text("hello")

@@ -23,13 +23,17 @@ from downloader import (
     _extract_zoom_mp4_and_title,
     _load_netscape_cookies,
     ZoomPasscodeRequiredError,
+    GDRIVE_FILE_PATTERN,
+    GDRIVE_FOLDER_PATTERN,
+    _parse_size_str,
+    _parse_eta_str,
 )
 from bot import parse_user_input
 
 
 def run_tests():
     print("=" * 60)
-    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.0.0)")
+    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.2.0)")
     print("=" * 60)
 
     # 1. Test formatters
@@ -85,6 +89,25 @@ def run_tests():
     assert is_gdrive_url("https://docs.google.com/document/d/1B2C3D4E5F6G7H8I9J/edit") is True
     assert is_gdrive_url("https://example.com/file.zip") is False
     print("✓ is_gdrive_url passed (Google Drive links recognized)")
+
+    # Test Google Drive regex patterns (v2.2.0)
+    m_file = GDRIVE_FILE_PATTERN.search("https://drive.google.com/file/d/1B2C3D4E5F6G7H8I9J/view?usp=sharing")
+    assert m_file and m_file.group(1) == "1B2C3D4E5F6G7H8I9J"
+    m_uc = GDRIVE_FILE_PATTERN.search("https://drive.google.com/uc?id=1B2C3D4E5F6G7H8I9J")
+    assert m_uc and m_uc.group(1) == "1B2C3D4E5F6G7H8I9J"
+    m_folder = GDRIVE_FOLDER_PATTERN.search("https://drive.google.com/drive/folders/1B2C3D4E5F6G7H8I9J")
+    assert m_folder and m_folder.group(1) == "1B2C3D4E5F6G7H8I9J"
+    print("✓ GDRIVE_FILE_PATTERN and GDRIVE_FOLDER_PATTERN regex verified")
+
+    # Test aria2c size and ETA parsers (v2.2.0)
+    assert _parse_size_str("150MiB") == 150 * 1024 * 1024
+    assert _parse_size_str("2.5GiB") == int(2.5 * 1024 * 1024 * 1024)
+    assert _parse_size_str("500KiB") == 500 * 1024
+    assert _parse_size_str("1024B") == 1024
+    assert _parse_eta_str("14s") == 14.0
+    assert _parse_eta_str("1m30s") == 90.0
+    assert _parse_eta_str("01:30") == 90.0
+    print("✓ aria2c size and ETA parsers verified")
 
     # 7. Test HLS fragment progress estimation (v2.0.0)
     frag_idx, frag_count, dl_bytes = 12, 20, 12000000
@@ -157,19 +180,22 @@ def run_tests():
     assert "asyncio.run(main())" not in bot_code, "bot.py must not use asyncio.run(main())"
     print("✓ Python 3.12+ event loop fix verified in bot.py (bot.run(main()) is active)")
 
-    # 14. Test downloader.py has high-speed engine, native HLS & 16-fragment concurrency
+    # 14. Test downloader.py has high-speed engine, native HLS & 32-fragment concurrency
     dl_code = Path("downloader.py").read_text(encoding="utf-8")
     assert '"hls_prefer_native": True' in dl_code, "downloader.py must enable native HLS downloader"
-    assert '"concurrent_fragment_downloads": 16' in dl_code, "downloader.py must use 16 concurrent fragments"
+    assert '"concurrent_fragment_downloads": 32' in dl_code, "downloader.py must use 32 concurrent fragments"
+    assert '"buffersize": 1024 * 1024' in dl_code, "downloader.py must use 1MB buffer"
     assert '"http_chunk_size": 10485760' in dl_code, "downloader.py must use 10MB chunk buffers"
     assert "download_gdrive_file" in dl_code, "downloader.py must contain download_gdrive_file"
-    print("✓ High-Speed 16-fragment HLS & Google Drive engine verified in downloader.py")
+    assert "aria2c" in dl_code, "downloader.py must support aria2c acceleration"
+    print("✓ High-Speed 32-fragment HLS, aria2c & Google Drive engine verified in downloader.py")
 
-    # 15. Test setup_service.sh systemd installer script
+    # 15. Test setup_service.sh systemd installer script with aria2
     setup_sh = Path("setup_service.sh").read_text(encoding="utf-8")
     assert "any-url-bot.service" in setup_sh, "setup_service.sh must configure any-url-bot.service"
     assert "systemctl enable any-url-bot.service" in setup_sh
-    print("✓ setup_service.sh one-command systemd installer script verified")
+    assert "apt-get install -y aria2" in setup_sh, "setup_service.sh must auto-install aria2"
+    print("✓ setup_service.sh one-command systemd installer script with aria2 verified")
 
     # 16. Test Zoom fallback extractor & Netscape cookies loader (v2.1.0)
     assert issubclass(ZoomPasscodeRequiredError, ValueError)
@@ -203,7 +229,13 @@ def run_tests():
     assert "cookies.txt" in bot_code, "bot.py must handle cookies.txt upload"
     print("✓ Telegram cookies.txt upload handler verified in bot.py")
 
-    # 18. Test clean_directory
+    # 18. Test thread-safe ProgressTracker in bot.py (v2.2.0)
+    assert "def update(" in bot_code, "bot.py ProgressTracker must have universal update method"
+    assert "def update_download_threadsafe(" in bot_code, "bot.py ProgressTracker must have threadsafe method"
+    assert "asyncio.run_coroutine_threadsafe" in bot_code, "bot.py must use run_coroutine_threadsafe for worker threads"
+    print("✓ Thread-safe ProgressTracker verified in bot.py")
+
+    # 19. Test clean_directory
     test_clean_dir = Path("test_clean_tmp")
     test_clean_dir.mkdir(exist_ok=True)
     (test_clean_dir / "dummy.txt").write_text("hello")
@@ -241,7 +273,7 @@ def run_tests():
         shutil.rmtree(test_dir, ignore_errors=True)
 
     asyncio.run(test_ffmpeg())
-    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.0.0)!\n")
+    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.2.0)!\n")
 
 
 if __name__ == "__main__":

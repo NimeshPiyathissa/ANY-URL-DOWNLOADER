@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -96,6 +97,11 @@ class ProgressTracker:
         self.last_edit_time = 0.0
         self.last_text = ""
         self.mode = "download"  # "download" or "upload"
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.get_event_loop()
+        self._main_thread = threading.main_thread()
 
     def set_filename(self, name: str) -> None:
         self.filename = name
@@ -104,6 +110,51 @@ class ProgressTracker:
         self.mode = mode
         self.start_time = time.time()
         self.last_edit_time = 0.0
+
+    def update(
+        self,
+        current: int,
+        total: int,
+        speed: Optional[float] = None,
+        eta: Optional[float] = None,
+        fragment_info: Optional[Tuple[int, int]] = None,
+        action_title: str = "📥 **Downloading File...**",
+    ) -> None:
+        """
+        Universal thread-safe progress update method.
+        Automatically checks threading.current_thread() and uses asyncio.run_coroutine_threadsafe
+        when invoked from a worker thread (e.g. yt-dlp hook or aria2c reader).
+        """
+        coro = self._render_and_edit(
+            action_title=action_title,
+            current=current,
+            total=total,
+            speed=speed,
+            eta=eta,
+            fragment_info=fragment_info,
+        )
+        if threading.current_thread() is not self._main_thread:
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
+        else:
+            self.loop.create_task(coro)
+
+    def update_download_threadsafe(
+        self,
+        current: int,
+        total: int,
+        speed: Optional[float] = None,
+        eta: Optional[float] = None,
+        fragment_info: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """Thread-safe update alias specifically for download callbacks."""
+        self.update(
+            current=current,
+            total=total,
+            speed=speed,
+            eta=eta,
+            fragment_info=fragment_info,
+            action_title="📥 **Downloading File...**",
+        )
 
     async def update_download(
         self,
@@ -114,6 +165,9 @@ class ProgressTracker:
         fragment_info: Optional[Tuple[int, int]] = None,
     ) -> None:
         """Throttled progress update for downloading from URL."""
+        if threading.current_thread() is not self._main_thread:
+            self.update(current, total, speed, eta, fragment_info, "📥 **Downloading File...**")
+            return
         await self._render_and_edit(
             action_title="📥 **Downloading File...**",
             current=current,
@@ -130,6 +184,9 @@ class ProgressTracker:
             if total > Config.BOT_MAX_SIZE
             else "📤 **Uploading to Telegram...**"
         )
+        if threading.current_thread() is not self._main_thread:
+            self.update(current, total, None, None, None, title)
+            return
         await self._render_and_edit(
             action_title=title,
             current=current,

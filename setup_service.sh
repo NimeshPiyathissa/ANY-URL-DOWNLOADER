@@ -32,6 +32,12 @@ if [ ! -f "$APP_DIR/.env" ]; then
     fi
 fi
 
+# Check and install aria2 for high-speed multi-connection downloads
+if ! command -v aria2c &> /dev/null; then
+    echo "⚡ aria2c not found. Installing aria2 for maximum multi-connection download speeds..."
+    apt-get update && apt-get install -y aria2 || echo "⚠️ Warning: apt-get install aria2 failed, using built-in parallel downloader."
+fi
+
 # Check for virtual environment python
 PYTHON_EXEC="$APP_DIR/venv/bin/python"
 if [ ! -f "$PYTHON_EXEC" ]; then

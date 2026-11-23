@@ -26,9 +26,17 @@ ZOOM_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Google Drive URL pattern matcher (file, folder, open?id=, uc?id=)
+# Google Drive URL pattern matchers (file, folder, open?id=, uc?id=)
 GDRIVE_PATTERN = re.compile(
     r"https?://(?:drive|docs)\.google\.com/(?:(?:file/d/|open\?id=|uc\?id=|drive/folders/)|(?:document|spreadsheets|presentation)/d/)([a-zA-Z0-9_-]+)",
+    re.IGNORECASE
+)
+GDRIVE_FILE_PATTERN = re.compile(
+    r"(?:/d/|[?&]id=)([a-zA-Z0-9_-]+)",
+    re.IGNORECASE
+)
+GDRIVE_FOLDER_PATTERN = re.compile(
+    r"/folders/([a-zA-Z0-9_-]+)",
     re.IGNORECASE
 )
 
@@ -60,6 +68,52 @@ def is_gdrive_url(url: str) -> bool:
         or ("drive.google.com" in url)
         or ("docs.google.com" in url and "/d/" in url)
     )
+
+
+def _parse_size_str(s: str) -> int:
+    """Parse size strings (e.g. '150MiB', '2.5GiB', '500KiB', '1024B') into integer bytes."""
+    s = s.strip()
+    units = {
+        "b": 1,
+        "k": 1024, "kb": 1000, "kib": 1024,
+        "m": 1024**2, "mb": 1000**2, "mib": 1024**2,
+        "g": 1024**3, "gb": 1000**3, "gib": 1024**3,
+        "t": 1024**4, "tb": 1000**4, "tib": 1024**4,
+    }
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*([a-zA-Z]*)$", s)
+    if not m:
+        return 0
+    val, unit = float(m.group(1)), m.group(2).lower()
+    return int(val * units.get(unit, 1))
+
+
+def _parse_eta_str(s: str) -> float:
+    """Parse ETA strings (e.g. '14s', '1m30s', '1h', '01:30', '01:15:30') into seconds."""
+    s = s.strip().lower()
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            if len(parts) == 2:
+                return float(int(parts[0]) * 60 + int(parts[1]))
+            elif len(parts) == 3:
+                return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+        except ValueError:
+            pass
+    total = 0.0
+    matches = re.findall(r"(\d+)([hms])", s)
+    if matches:
+        for val, unit in matches:
+            if unit == "h":
+                total += int(val) * 3600
+            elif unit == "m":
+                total += int(val) * 60
+            elif unit == "s":
+                total += int(val)
+        return total
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
 
 def _load_netscape_cookies(cookies_path: Path) -> dict:
@@ -239,7 +293,6 @@ def extract_filename_from_headers(headers: aiohttp.typedefs.LooseHeaders, url: s
     filename: Optional[str] = None
 
     if content_disp:
-        # 1. Try RFC 5987/6266 format: filename*=UTF-8''filename.ext
         match_utf8 = re.search(
             r"filename\*\s*=\s*(?:UTF-8|iso-8859-1)''([^;\s]+)",
             content_disp,
@@ -248,20 +301,17 @@ def extract_filename_from_headers(headers: aiohttp.typedefs.LooseHeaders, url: s
         if match_utf8:
             filename = urllib.parse.unquote(match_utf8.group(1))
 
-        # 2. Standard format: filename="filename.ext" or filename=filename.ext
         if not filename:
             match_std = re.search(r'filename\s*=\s*(?:"([^"]+)"|([^;\s]+))', content_disp, re.IGNORECASE)
             if match_std:
                 filename = match_std.group(1) or match_std.group(2)
 
-    # 3. Fallback to URL path
     if not filename:
         parsed_path = urllib.parse.urlparse(url).path
         base = os.path.basename(parsed_path)
         if base:
             filename = urllib.parse.unquote(base)
 
-    # 4. Final fallback if still empty or generic
     if not filename or filename.strip() == "":
         content_type = headers.get("Content-Type", "").lower()
         if "video/mp4" in content_type:
@@ -284,9 +334,10 @@ async def download_direct_url(
     extra_headers: Optional[dict] = None
 ) -> Path:
     """
-    High-Speed Direct File Downloader with Multi-Connection Parallel Range support.
-    Uses 8 concurrent range connections and 1MB chunks when supported by the server,
-    with an automatic streaming fallback for single-stream or dynamic endpoints.
+    High-Speed Direct File Downloader.
+    1. First attempts aria2c accelerator with 16 connections if available on system.
+    2. Falls back to multi-connection parallel Range downloader (8 concurrent aiohttp workers with 1MB chunks).
+    3. Seamlessly falls back to sequential chunked stream for non-range endpoints.
     Enforces Config.MAX_FILE_SIZE dynamically.
     """
     headers = {
@@ -308,7 +359,6 @@ async def download_direct_url(
             if probe_resp.status >= 400:
                 raise ValueError(f"HTTP Server returned error {probe_resp.status}: {probe_resp.reason}")
 
-            # Determine total file size
             content_length = 0
             accepts_ranges = False
 
@@ -324,7 +374,6 @@ async def download_direct_url(
                 if probe_resp.headers.get("Accept-Ranges", "").lower() == "bytes":
                     accepts_ranges = True
 
-            # Enforce max file size
             if content_length > Config.MAX_FILE_SIZE:
                 limit_str = format_bytes(Config.MAX_FILE_SIZE)
                 raise ValueError(
@@ -345,9 +394,68 @@ async def download_direct_url(
             progress_tracker.set_filename(final_name)
             output_filepath = output_dir / final_name
 
-        # --- High-Speed Branch: Multi-Connection Parallel Range Downloader ---
+        # --- Ultra-Fast Accelerator 1: aria2c (16 connections) ---
+        aria2c_bin = shutil.which("aria2c")
+        if aria2c_bin and not extra_headers:
+            logger.info(f"⚡ Launching aria2c accelerator with 16 connections for {final_name}...")
+            cmd = [
+                aria2c_bin,
+                "-x", "16",
+                "-s", "16",
+                "-k", "1M",
+                "--file-allocation=none",
+                "--summary-interval=1",
+                "--auto-file-renaming=false",
+                "--allow-overwrite=true",
+                "-d", str(output_dir),
+                "-o", final_name,
+                url,
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                async def read_aria_stdout():
+                    while True:
+                        line_bytes = await proc.stdout.readline()
+                        if not line_bytes:
+                            break
+                        line_str = line_bytes.decode("utf-8", errors="ignore").strip()
+                        m_progress = re.search(
+                            r"(\d+(?:\.\d+)?[a-zA-Z]+)/(\d+(?:\.\d+)?[a-zA-Z]+)\s*\(\s*(\d+)%\s*\)",
+                            line_str
+                        )
+                        m_speed = re.search(r"DL:(\d+(?:\.\d+)?[a-zA-Z]+)", line_str)
+                        m_eta = re.search(r"ETA:(\w+)", line_str)
+
+                        if m_progress:
+                            cur_b = _parse_size_str(m_progress.group(1))
+                            tot_b = _parse_size_str(m_progress.group(2))
+                            spd_b = float(_parse_size_str(m_speed.group(1))) if m_speed else 0.0
+                            eta_s = _parse_eta_str(m_eta.group(1)) if m_eta else 0.0
+                            if hasattr(progress_tracker, "update"):
+                                progress_tracker.update(current=cur_b, total=tot_b, speed=spd_b, eta=eta_s)
+                            else:
+                                await progress_tracker.update_download(current=cur_b, total=tot_b, speed=spd_b, eta=eta_s)
+
+                await read_aria_stdout()
+                await proc.wait()
+
+                if proc.returncode == 0 and output_filepath.exists() and output_filepath.stat().st_size > 0:
+                    f_size = output_filepath.stat().st_size
+                    await progress_tracker.update_download(current=f_size, total=f_size)
+                    return output_filepath
+                else:
+                    logger.warning(f"aria2c non-zero exit ({proc.returncode}). Falling back to aiohttp range downloader.")
+            except Exception as aria_err:
+                logger.warning(f"aria2c execution error ({aria_err}). Falling back to aiohttp range downloader.")
+
+        # --- Ultra-Fast Accelerator 2: Multi-Connection Parallel Range Downloader (8 connections) ---
         num_connections = 8
-        min_parallel_size = 4 * 1024 * 1024  # 4 MB threshold for parallelization
+        min_parallel_size = 4 * 1024 * 1024  # 4 MB threshold
 
         if accepts_ranges and content_length >= min_parallel_size:
             logger.info(
@@ -359,14 +467,13 @@ async def download_direct_url(
             downloaded_per_worker = [0] * num_connections
             is_downloading = True
 
-            # Background progress reporter
             async def progress_reporter():
                 while is_downloading:
                     current_total = sum(downloaded_per_worker)
-                    await progress_tracker.update_download(
-                        current=current_total,
-                        total=content_length
-                    )
+                    if hasattr(progress_tracker, "update"):
+                        progress_tracker.update(current=current_total, total=content_length)
+                    else:
+                        await progress_tracker.update_download(current=current_total, total=content_length)
                     await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
 
             reporter_task = asyncio.create_task(progress_reporter())
@@ -439,16 +546,20 @@ async def download_direct_url(
                         limit_str = format_bytes(Config.MAX_FILE_SIZE)
                         raise ValueError(f"Download aborted: Stream exceeded the maximum limit of {limit_str}.")
 
-                    await progress_tracker.update_download(
-                        current=downloaded_bytes,
-                        total=content_length
-                    )
+                    if hasattr(progress_tracker, "update"):
+                        progress_tracker.update(current=downloaded_bytes, total=content_length)
+                    else:
+                        await progress_tracker.update_download(current=downloaded_bytes, total=content_length)
 
             await progress_tracker.update_download(
                 current=downloaded_bytes,
                 total=downloaded_bytes if content_length <= 0 else content_length
             )
             return output_filepath
+
+
+# Alias download_direct_file to download_direct_url for consistency
+download_direct_file = download_direct_url
 
 
 async def download_gdrive_file(
@@ -459,12 +570,10 @@ async def download_gdrive_file(
 ) -> Path:
     """
     High-Speed Google Drive Downloader using gdown.
-    Supports public file links, shared folders, and handles confirmation tokens for large files.
+    Supports clean file ID downloads and shared folders (compressed to .zip).
     Enforces Config.MAX_FILE_SIZE and reports real-time file size growth.
     """
     logger.info(f"Starting Google Drive download for URL: {url}")
-    target_dest = output_dir / (custom_filename or "gdrive_download")
-
     is_downloading = True
 
     async def monitor_gdrive_progress():
@@ -473,22 +582,63 @@ async def download_gdrive_file(
             if files:
                 current_size = sum(f.stat().st_size for f in files)
                 if current_size > 0:
-                    await progress_tracker.update_download(current=current_size, total=0)
+                    if hasattr(progress_tracker, "update"):
+                        progress_tracker.update(current=current_size, total=0)
+                    else:
+                        await progress_tracker.update_download(current=current_size, total=0)
             await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
 
     monitor_task = asyncio.create_task(monitor_gdrive_progress())
 
-    def run_gdown_sync() -> Optional[str]:
-        output_arg = str(target_dest) if custom_filename else str(output_dir)
-        return gdown.download(
-            url=url,
-            output=output_arg,
-            quiet=True,
-            fuzzy=True
-        )
-
+    folder_match = GDRIVE_FOLDER_PATTERN.search(url)
     try:
-        await asyncio.to_thread(run_gdown_sync)
+        if folder_match:
+            folder_id = folder_match.group(1)
+            folder_out = output_dir / (Path(custom_filename).stem if custom_filename else "gdrive_folder")
+            folder_out.mkdir(parents=True, exist_ok=True)
+
+            def run_folder_sync():
+                return gdown.download_folder(id=folder_id, output=str(folder_out), quiet=True)
+
+            await asyncio.to_thread(run_folder_sync)
+
+            # Zip the downloaded folder
+            zip_stem = sanitize_filename(Path(custom_filename).stem if custom_filename else "gdrive_folder")
+            zip_base = output_dir / zip_stem
+            zip_path_str = await asyncio.to_thread(shutil.make_archive, str(zip_base), "zip", str(folder_out))
+            downloaded_file = Path(zip_path_str)
+        else:
+            file_match = GDRIVE_FILE_PATTERN.search(url)
+            file_id = file_match.group(1) if file_match else None
+            target_dest = output_dir / (custom_filename or "gdrive_download")
+
+            def run_file_sync() -> Optional[str]:
+                output_arg = str(target_dest) if custom_filename else str(output_dir)
+                if file_id:
+                    return gdown.download(id=file_id, output=output_arg, quiet=True)
+                return gdown.download(url=url, output=output_arg, quiet=True)
+
+            await asyncio.to_thread(run_file_sync)
+
+            candidates = [
+                f for f in output_dir.glob("*")
+                if f.is_file() and not f.name.endswith(".tmp")
+            ]
+            if not candidates:
+                raise FileNotFoundError("Google Drive download finished, but no file was created.")
+
+            candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            downloaded_file = candidates[0]
+
+            if custom_filename:
+                safe_custom = sanitize_filename(custom_filename)
+                if not Path(safe_custom).suffix and downloaded_file.suffix:
+                    safe_custom = f"{safe_custom}{downloaded_file.suffix}"
+                target_path = output_dir / safe_custom
+                if target_path != downloaded_file:
+                    downloaded_file.rename(target_path)
+                    downloaded_file = target_path
+
     except Exception as e:
         raise ValueError(f"⚠️ **Google Drive Download Failed:** {e}") from e
     finally:
@@ -498,27 +648,6 @@ async def download_gdrive_file(
             await monitor_task
         except asyncio.CancelledError:
             pass
-
-    # Find the downloaded file in the output directory
-    candidates = [
-        f for f in output_dir.glob("*")
-        if f.is_file() and not f.name.endswith(".tmp")
-    ]
-    if not candidates:
-        raise FileNotFoundError("Google Drive download finished, but no file was created.")
-
-    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    downloaded_file = candidates[0]
-
-    # Handle custom filename rename
-    if custom_filename:
-        safe_custom = sanitize_filename(custom_filename)
-        if not Path(safe_custom).suffix and downloaded_file.suffix:
-            safe_custom = f"{safe_custom}{downloaded_file.suffix}"
-        target_path = output_dir / safe_custom
-        if target_path != downloaded_file:
-            downloaded_file.rename(target_path)
-            downloaded_file = target_path
 
     file_size = downloaded_file.stat().st_size
     if file_size > Config.MAX_FILE_SIZE:
@@ -552,8 +681,8 @@ async def download_stream_or_zoom(
 ) -> Path:
     """
     High-Speed Unified yt-dlp downloader for Zoom recordings and HLS/DASH streams.
-    Downloads 16 fragments concurrently with native HLS segment downloader and 10MB chunk buffers.
-    Features resilient Zoom fallback extraction via aiohttp web-parsing if yt-dlp fails.
+    Downloads 32 fragments concurrently with native HLS segment downloader and 10MB chunk buffers.
+    Features real-time progress callbacks on every fragment/byte update.
     Enforces Config.MAX_FILE_SIZE.
     """
     state = _StreamDownloadState()
@@ -577,6 +706,17 @@ async def download_stream_or_zoom(
             state.total_bytes = total
             state.speed = float(d.get("speed") or 0.0)
             state.eta = float(d.get("eta") or 0.0)
+
+            # Thread-safe direct progress update on every fragment/byte update
+            frag_info = (state.fragment_index, state.fragment_count) if state.fragment_count > 0 else None
+            if hasattr(progress_tracker, "update"):
+                progress_tracker.update(
+                    current=state.downloaded_bytes,
+                    total=state.total_bytes,
+                    speed=state.speed,
+                    eta=state.eta,
+                    fragment_info=frag_info,
+                )
         elif status == "finished":
             state.is_done = True
 
@@ -595,7 +735,8 @@ async def download_stream_or_zoom(
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
-        "concurrent_fragment_downloads": 16,
+        "concurrent_fragment_downloads": 32,
+        "buffersize": 1024 * 1024,
         "retries": 10,
         "fragment_retries": 10,
         "http_chunk_size": 10485760,  # 10 MB chunk size
@@ -622,13 +763,22 @@ async def download_stream_or_zoom(
         while not state.is_done and state.error is None:
             if state.downloaded_bytes > 0 or state.fragment_index > 0:
                 frag_info = (state.fragment_index, state.fragment_count) if state.fragment_count > 0 else None
-                await progress_tracker.update_download(
-                    current=state.downloaded_bytes,
-                    total=state.total_bytes,
-                    speed=state.speed,
-                    eta=state.eta,
-                    fragment_info=frag_info,
-                )
+                if hasattr(progress_tracker, "update"):
+                    progress_tracker.update(
+                        current=state.downloaded_bytes,
+                        total=state.total_bytes,
+                        speed=state.speed,
+                        eta=state.eta,
+                        fragment_info=frag_info,
+                    )
+                else:
+                    await progress_tracker.update_download(
+                        current=state.downloaded_bytes,
+                        total=state.total_bytes,
+                        speed=state.speed,
+                        eta=state.eta,
+                        fragment_info=frag_info,
+                    )
             await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
 
     monitor_task = asyncio.create_task(monitor_progress())
@@ -653,7 +803,6 @@ async def download_stream_or_zoom(
             is_extract_issue = "unable to extract" in err_msg or "extractor" in err_msg or "403" in err_msg
 
             if (is_passcode_issue or is_extract_issue) and not passcode:
-                # Prompt user in chat for the passcode
                 raise ZoomPasscodeRequiredError(
                     f"Zoom recording requires a passcode or session verification."
                 ) from e

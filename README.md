@@ -5,14 +5,14 @@
 <h1 align="center">⚡ ANY URL, HLS (.m3u8), ZOOM & GOOGLE DRIVE DOWNLOADER BOT</h1>
 
 <p align="center">
-  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 8-Connection Parallel Range Engine, 16-Fragment HLS/DASH Concurrency, Resilient Zoom Web-Fallback Extractor, Telegram cookies.txt Upload, and One-Command Systemd Deployment.</b>
+  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 16-Connection aria2c Multi-Range Engine, 32-Fragment HLS/DASH Concurrency, Resilient Zoom Web-Fallback Extractor, Telegram cookies.txt Upload, and One-Command Systemd Deployment.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.1.0"><img src="https://img.shields.io/badge/Release-v2.1.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.1.0"/></a>
+  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.2.0"><img src="https://img.shields.io/badge/Release-v2.2.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.2.0"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://github.com/Mayuri-Chan/pyrofork"><img src="https://img.shields.io/badge/Pyrofork-MTProto%20v2-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Pyrofork MTProto"/></a>
-  <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-16x%20Fragments-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp"/></a>
+  <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-32x%20Fragments%20%2B%20aria2c-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp & aria2c"/></a>
   <a href="https://github.com/wkentaro/gdown"><img src="https://img.shields.io/badge/Google%20Drive-gdown%20Engine-4285F4?style=for-the-badge&logo=googledrive&logoColor=white" alt="Google Drive"/></a>
   <a href="#-4gb-hybrid-upload-architecture"><img src="https://img.shields.io/badge/Upload%20Capacity-4.0%20GB%20Hybrid-8A2BE2?style=for-the-badge&logo=airplayvideo&logoColor=white" alt="4GB Uploads"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License"/></a>
@@ -22,6 +22,7 @@
 
 ## 📑 Table of Contents
 
+- [What's New in v2.2.0](#-whats-new-in-v220)
 - [What's New in v2.1.0](#-whats-new-in-v210)
 - [Architecture & Upload Modes](#-architecture--upload-modes)
 - [Key Features](#-key-features)
@@ -32,6 +33,16 @@
 - [Step-by-Step Ubuntu VPS Setup](#-step-by-step-ubuntu-vps-setup)
 - [Troubleshooting & FAQ](#-troubleshooting--faq)
 - [License & Contributions](#-license--contributions)
+
+---
+
+## 🚀 What's New in v2.2.0
+
+* **⚡ 32-Fragment Concurrent HLS/DASH Engine:** Increased segment download concurrency to 32 parallel fragments with 1MB chunk buffers, doubling download speeds for live streams and lectures while completely preventing stream stalls.
+* **🚀 High-Speed `aria2c` Multi-Connection Engine:** Direct HTTP/HTTPS downloads automatically harness `aria2c` with 16 parallel connections (`-x 16 -s 16 -k 1M`) when available on the host, with automatic fallback to our 8-worker asynchronous `aiohttp` parallel range downloader.
+* **🛠️ Resilient Google Drive File & Folder Engine:** Fixed `gdown` keyword incompatibilities (`unexpected keyword argument 'fuzzy'`), added robust regex ID extraction (`/d/...`, `uc?id=...`), and introduced automatic Google Drive folder downloading with automated `.zip` bundle archiving.
+* **📊 Live Thread-Safe Progress Bar Updates:** Enhanced `ProgressTracker` with thread-safe coroutine scheduling (`asyncio.run_coroutine_threadsafe`), ensuring real-time progress updates ([██████░░░░] % & speed & ETA) stream dynamically even from external downloader worker threads and aria2c stdout readers.
+* **📦 Automatic aria2 Provisioning:** `setup_service.sh` now automatically installs `aria2` via `apt-get` if missing during deployment.
 
 ---
 

@@ -1,13 +1,16 @@
 import asyncio
 import logging
+import math
 import os
 import re
+import shutil
 import urllib.parse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import aiofiles
 import aiohttp
+import gdown
 import yt_dlp
 from yt_dlp.utils import DownloadError, ExtractorError
 
@@ -19,6 +22,12 @@ logger = logging.getLogger(__name__)
 # Zoom URL pattern matcher for both rec and recording paths
 ZOOM_PATTERN = re.compile(
     r"https?://(?:[a-zA-Z0-9-]+\.)?zoom\.us/(?:rec|recording)/(?:play|share)/[^\s?#]+",
+    re.IGNORECASE
+)
+
+# Google Drive URL pattern matcher (file, folder, open?id=, uc?id=)
+GDRIVE_PATTERN = re.compile(
+    r"https?://(?:drive|docs)\.google\.com/(?:(?:file/d/|open\?id=|uc\?id=|drive/folders/)|(?:document|spreadsheets|presentation)/d/)([a-zA-Z0-9_-]+)",
     re.IGNORECASE
 )
 
@@ -36,6 +45,15 @@ def is_stream_url(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)
     path_lower = parsed.path.lower()
     return path_lower.endswith(".m3u8") or path_lower.endswith(".mpd")
+
+
+def is_gdrive_url(url: str) -> bool:
+    """Check if the provided URL is a Google Drive file or folder link."""
+    return bool(
+        GDRIVE_PATTERN.search(url)
+        or ("drive.google.com" in url)
+        or ("docs.google.com" in url and "/d/" in url)
+    )
 
 
 def _derive_stream_filename(url: str) -> str:
@@ -117,55 +135,154 @@ async def download_direct_url(
     progress_tracker
 ) -> Path:
     """
-    Download a direct file URL asynchronously using streaming chunks with aiohttp.
-    Supports throttled progress reporting and dynamically enforces Config.MAX_FILE_SIZE (2GB or 4GB).
+    High-Speed Direct File Downloader with Multi-Connection Parallel Range support.
+    Uses 8 concurrent range connections and 1MB chunks when supported by the server,
+    with an automatic streaming fallback for single-stream or dynamic endpoints.
+    Enforces Config.MAX_FILE_SIZE dynamically.
     """
     headers = {
         "User-Agent": Config.DEFAULT_USER_AGENT,
         "Accept": "*/*",
-        "Accept-Encoding": "identity",  # Avoid gzip/chunked encoding issues for accurate size reporting
+        "Accept-Encoding": "identity",
     }
-
     timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=180)
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        async with session.get(url, allow_redirects=True) as response:
-            if response.status >= 400:
-                raise ValueError(f"HTTP Server returned error {response.status}: {response.reason}")
+        # Check server support for Range requests and retrieve metadata
+        test_headers = dict(headers)
+        test_headers["Range"] = "bytes=0-0"
 
-            # Check content length against active maximum size limit
-            content_length = response.content_length or 0
+        async with session.get(url, headers=test_headers, allow_redirects=True) as probe_resp:
+            if probe_resp.status >= 400:
+                raise ValueError(f"HTTP Server returned error {probe_resp.status}: {probe_resp.reason}")
+
+            # Determine total file size
+            content_length = 0
+            accepts_ranges = False
+
+            content_range = probe_resp.headers.get("Content-Range", "")
+            if probe_resp.status == 206 and "/" in content_range:
+                try:
+                    content_length = int(content_range.rsplit("/", 1)[-1])
+                    accepts_ranges = True
+                except ValueError:
+                    content_length = probe_resp.content_length or 0
+            else:
+                content_length = probe_resp.content_length or 0
+                if probe_resp.headers.get("Accept-Ranges", "").lower() == "bytes":
+                    accepts_ranges = True
+
+            # Enforce max file size
             if content_length > Config.MAX_FILE_SIZE:
                 limit_str = format_bytes(Config.MAX_FILE_SIZE)
                 raise ValueError(
                     f"File size ({format_bytes(content_length)}) exceeds the maximum allowed limit of {limit_str}."
                 )
 
-            # Determine filename
+            # Determine final output filename
             if custom_filename:
                 final_name = sanitize_filename(custom_filename)
-                # If custom name lacks extension, infer from response headers/url
                 if not Path(final_name).suffix:
-                    inferred_name = extract_filename_from_headers(response.headers, str(response.url))
+                    inferred_name = extract_filename_from_headers(probe_resp.headers, str(probe_resp.url))
                     inferred_ext = Path(inferred_name).suffix
                     if inferred_ext:
                         final_name = f"{final_name}{inferred_ext}"
             else:
-                final_name = extract_filename_from_headers(response.headers, str(response.url))
+                final_name = extract_filename_from_headers(probe_resp.headers, str(probe_resp.url))
 
             progress_tracker.set_filename(final_name)
             output_filepath = output_dir / final_name
 
-            # Stream response to file
+        # --- High-Speed Branch: Multi-Connection Parallel Range Downloader ---
+        num_connections = 8
+        min_parallel_size = 4 * 1024 * 1024  # 4 MB threshold for parallelization
+
+        if accepts_ranges and content_length >= min_parallel_size:
+            logger.info(
+                f"Multi-connection range download enabled for {final_name} "
+                f"({format_bytes(content_length)}) using {num_connections} workers."
+            )
+            part_size = math.ceil(content_length / num_connections)
+            part_files: list[Path] = []
+            downloaded_per_worker = [0] * num_connections
+            is_downloading = True
+
+            # Background progress reporter
+            async def progress_reporter():
+                while is_downloading:
+                    current_total = sum(downloaded_per_worker)
+                    await progress_tracker.update_download(
+                        current=current_total,
+                        total=content_length
+                    )
+                    await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
+
+            reporter_task = asyncio.create_task(progress_reporter())
+
+            async def download_part(worker_id: int, start: int, end: int):
+                part_path = output_dir / f"{final_name}.part_{worker_id}"
+                part_files.append(part_path)
+                part_headers = dict(headers)
+                part_headers["Range"] = f"bytes={start}-{end}"
+
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as worker_session:
+                    async with worker_session.get(url, headers=part_headers, allow_redirects=True) as resp:
+                        if resp.status not in (200, 206):
+                            raise ValueError(f"Worker {worker_id} range request failed: status {resp.status}")
+
+                        async with aiofiles.open(part_path, "wb") as f_part:
+                            async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB buffer
+                                await f_part.write(chunk)
+                                downloaded_per_worker[worker_id] += len(chunk)
+
+            try:
+                tasks = []
+                for i in range(num_connections):
+                    start = i * part_size
+                    end = min(start + part_size - 1, content_length - 1)
+                    if start <= end:
+                        tasks.append(download_part(i, start, end))
+
+                await asyncio.gather(*tasks)
+
+            finally:
+                is_downloading = False
+                reporter_task.cancel()
+                try:
+                    await reporter_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Fast chunked concatenation of parts
+            async with aiofiles.open(output_filepath, "wb") as f_out:
+                for i in range(num_connections):
+                    part_p = output_dir / f"{final_name}.part_{i}"
+                    if part_p.exists():
+                        async with aiofiles.open(part_p, "rb") as f_part:
+                            while True:
+                                data = await f_part.read(4 * 1024 * 1024)  # 4MB chunks
+                                if not data:
+                                    break
+                                await f_out.write(data)
+                        part_p.unlink(missing_ok=True)
+
+            await progress_tracker.update_download(current=content_length, total=content_length)
+            return output_filepath
+
+        # --- Fallback Branch: Standard Chunked Stream Downloader ---
+        logger.info(f"Using standard stream downloader for {final_name} (Range not supported or small file).")
+        async with session.get(url, allow_redirects=True) as response:
+            if response.status >= 400:
+                raise ValueError(f"HTTP Server returned error {response.status}: {response.reason}")
+
             downloaded_bytes = 0
-            chunk_size = 512 * 1024  # 512 KB chunks
+            chunk_size = 1024 * 1024  # 1 MB chunk buffer
 
             async with aiofiles.open(output_filepath, mode="wb") as f:
                 async for chunk in response.content.iter_chunked(chunk_size):
                     await f.write(chunk)
                     downloaded_bytes += len(chunk)
 
-                    # Guard against runaway downloads exceeding limit when Content-Length is missing/inaccurate
                     if downloaded_bytes > Config.MAX_FILE_SIZE:
                         limit_str = format_bytes(Config.MAX_FILE_SIZE)
                         raise ValueError(f"Download aborted: Stream exceeded the maximum limit of {limit_str}.")
@@ -175,13 +292,91 @@ async def download_direct_url(
                         total=content_length
                     )
 
-            # Ensure final progress update reaches 100%
             await progress_tracker.update_download(
                 current=downloaded_bytes,
                 total=downloaded_bytes if content_length <= 0 else content_length
             )
-
             return output_filepath
+
+
+async def download_gdrive_file(
+    url: str,
+    output_dir: Path,
+    custom_filename: Optional[str],
+    progress_tracker
+) -> Path:
+    """
+    High-Speed Google Drive Downloader using gdown.
+    Supports public file links, shared folders, and handles confirmation tokens for large files.
+    Enforces Config.MAX_FILE_SIZE and reports real-time file size growth.
+    """
+    logger.info(f"Starting Google Drive download for URL: {url}")
+    target_dest = output_dir / (custom_filename or "gdrive_download")
+
+    is_downloading = True
+
+    async def monitor_gdrive_progress():
+        while is_downloading:
+            files = [f for f in output_dir.glob("*") if f.is_file() and not f.name.endswith(".tmp")]
+            if files:
+                current_size = sum(f.stat().st_size for f in files)
+                if current_size > 0:
+                    await progress_tracker.update_download(current=current_size, total=0)
+            await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
+
+    monitor_task = asyncio.create_task(monitor_gdrive_progress())
+
+    def run_gdown_sync() -> Optional[str]:
+        # gdown returns the path of the downloaded file or None
+        output_arg = str(target_dest) if custom_filename else str(output_dir)
+        return gdown.download(
+            url=url,
+            output=output_arg,
+            quiet=True,
+            fuzzy=True
+        )
+
+    try:
+        result_path_str = await asyncio.to_thread(run_gdown_sync)
+    except Exception as e:
+        raise ValueError(f"⚠️ **Google Drive Download Failed:** {e}") from e
+    finally:
+        is_downloading = False
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
+
+    # Find the downloaded file in the output directory
+    candidates = [
+        f for f in output_dir.glob("*")
+        if f.is_file() and not f.name.endswith(".tmp")
+    ]
+    if not candidates:
+        raise FileNotFoundError("Google Drive download finished, but no file was created.")
+
+    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    downloaded_file = candidates[0]
+
+    # Handle custom filename rename
+    if custom_filename:
+        safe_custom = sanitize_filename(custom_filename)
+        if not Path(safe_custom).suffix and downloaded_file.suffix:
+            safe_custom = f"{safe_custom}{downloaded_file.suffix}"
+        target_path = output_dir / safe_custom
+        if target_path != downloaded_file:
+            downloaded_file.rename(target_path)
+            downloaded_file = target_path
+
+    file_size = downloaded_file.stat().st_size
+    if file_size > Config.MAX_FILE_SIZE:
+        limit_str = format_bytes(Config.MAX_FILE_SIZE)
+        raise ValueError(f"Downloaded file ({format_bytes(file_size)}) exceeds active upload limit of {limit_str}.")
+
+    await progress_tracker.update_download(current=file_size, total=file_size)
+    progress_tracker.set_filename(downloaded_file.name)
+    return downloaded_file
 
 
 class _StreamDownloadState:
@@ -191,6 +386,8 @@ class _StreamDownloadState:
         self.total_bytes: int = 0
         self.speed: float = 0.0
         self.eta: float = 0.0
+        self.fragment_index: int = 0
+        self.fragment_count: int = 0
         self.is_done: bool = False
         self.error: Optional[Exception] = None
 
@@ -203,10 +400,10 @@ async def download_stream_or_zoom(
     progress_tracker
 ) -> Path:
     """
-    Unified yt-dlp downloader for Zoom cloud recordings and HLS/DASH streams.
-    Downloads all fragments concurrently and merges them into a single .mp4 file.
-    Handles passcode authentication, browser headers, optional cookies.txt, and progress tracking.
-    Enforces Config.MAX_FILE_SIZE. Runs yt-dlp in a worker thread to avoid blocking asyncio.
+    High-Speed Unified yt-dlp downloader for Zoom recordings and HLS/DASH streams.
+    Downloads 16 fragments concurrently with native HLS segment downloader and 10MB chunk buffers.
+    Calculates estimated total bytes and progress using fragment counts when total_bytes is None.
+    Enforces Config.MAX_FILE_SIZE.
     """
     state = _StreamDownloadState()
 
@@ -215,7 +412,19 @@ async def download_stream_or_zoom(
         status = d.get("status")
         if status == "downloading":
             state.downloaded_bytes = d.get("downloaded_bytes", 0)
-            state.total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+
+            # Fragment tracking for HLS / DASH manifests
+            frag_idx = d.get("fragment_index")
+            frag_count = d.get("fragment_count")
+            if frag_idx and frag_count and frag_count > 0:
+                state.fragment_index = frag_idx
+                state.fragment_count = frag_count
+                if not total or total <= 0:
+                    frag_ratio = frag_idx / frag_count
+                    total = int(state.downloaded_bytes / frag_ratio) if frag_ratio > 0 else 0
+
+            state.total_bytes = total
             state.speed = float(d.get("speed") or 0.0)
             state.eta = float(d.get("eta") or 0.0)
         elif status == "finished":
@@ -236,7 +445,10 @@ async def download_stream_or_zoom(
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
-        "concurrent_fragment_downloads": 4,
+        "concurrent_fragment_downloads": 16,
+        "retries": 10,
+        "fragment_retries": 10,
+        "http_chunk_size": 10485760,  # 10 MB chunk size
         "hls_prefer_native": True,
         "downloader": "native",
         "max_filesize": Config.MAX_FILE_SIZE,
@@ -260,12 +472,14 @@ async def download_stream_or_zoom(
     # Async monitor task to periodically update Telegram progress
     async def monitor_progress():
         while not state.is_done and state.error is None:
-            if state.downloaded_bytes > 0:
+            if state.downloaded_bytes > 0 or state.fragment_index > 0:
+                frag_info = (state.fragment_index, state.fragment_count) if state.fragment_count > 0 else None
                 await progress_tracker.update_download(
                     current=state.downloaded_bytes,
                     total=state.total_bytes,
                     speed=state.speed,
-                    eta=state.eta
+                    eta=state.eta,
+                    fragment_info=frag_info,
                 )
             await asyncio.sleep(Config.PROGRESS_UPDATE_INTERVAL)
 

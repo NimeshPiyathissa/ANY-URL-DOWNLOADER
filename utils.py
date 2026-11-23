@@ -40,12 +40,12 @@ def format_time(seconds: int | float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def generate_progress_bar(percentage: float, length: int = 10) -> str:
-    """Generate a visual text-based progress bar."""
+def generate_progress_bar(percentage: float, length: int = 10, fill_char: str = "█", empty_char: str = "░") -> str:
+    """Generate a clean visual text-based progress bar."""
     percentage = max(0.0, min(100.0, percentage))
     filled_length = int(round(length * (percentage / 100.0)))
     filled_length = max(0, min(length, filled_length))
-    return "■" * filled_length + "□" * (length - filled_length)
+    return fill_char * filled_length + empty_char * (length - filled_length)
 
 
 def sanitize_filename(name: str, max_length: int = 200) -> str:

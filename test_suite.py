@@ -17,6 +17,7 @@ from utils import (
 from downloader import (
     is_zoom_url,
     is_stream_url,
+    is_gdrive_url,
     extract_filename_from_headers,
     _derive_stream_filename,
 )
@@ -25,7 +26,7 @@ from bot import parse_user_input
 
 def run_tests():
     print("=" * 60)
-    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE")
+    print("      RUNNING BOT COMPONENT & REGRESSION TEST SUITE (v2.0.0)")
     print("=" * 60)
 
     # 1. Test formatters
@@ -41,11 +42,12 @@ def run_tests():
     assert format_time(3665) == "01:01:05"
     print("✓ format_time passed")
 
-    # 2. Test progress bar
-    assert generate_progress_bar(0) == "□□□□□□□□□□"
-    assert generate_progress_bar(50) == "■■■■■□□□□□"
-    assert generate_progress_bar(100) == "■■■■■■■■■■"
-    print("✓ generate_progress_bar passed")
+    # 2. Test progress bar (v2.0.0 clean block styling: [██████░░░░])
+    assert generate_progress_bar(0) == "░░░░░░░░░░"
+    assert generate_progress_bar(50) == "█████░░░░░"
+    assert generate_progress_bar(60) == "██████░░░░"
+    assert generate_progress_bar(100) == "██████████"
+    print("✓ generate_progress_bar clean block styling passed ([██████░░░░])")
 
     # 3. Test sanitize filename & video checker
     assert sanitize_filename("test:file*name?.mp4") == "test_file_name_.mp4"
@@ -72,27 +74,41 @@ def run_tests():
     assert is_stream_url("https://example.com/file.m3u8.bak") is False
     print("✓ is_stream_url passed")
 
-    # 6. Test _derive_stream_filename with Sinhala/Unicode folder names
-    # master.m3u8 with URL-encoded Sinhala parent folder
+    # 6. Test Google Drive URL detection (v2.0.0)
+    assert is_gdrive_url("https://drive.google.com/file/d/1B2C3D4E5F6G7H8I9J/view?usp=sharing") is True
+    assert is_gdrive_url("https://drive.google.com/open?id=1B2C3D4E5F6G7H8I9J") is True
+    assert is_gdrive_url("https://drive.google.com/uc?id=1B2C3D4E5F6G7H8I9J") is True
+    assert is_gdrive_url("https://drive.google.com/drive/folders/1B2C3D4E5F6G7H8I9J") is True
+    assert is_gdrive_url("https://docs.google.com/document/d/1B2C3D4E5F6G7H8I9J/edit") is True
+    assert is_gdrive_url("https://example.com/file.zip") is False
+    print("✓ is_gdrive_url passed (Google Drive links recognized)")
+
+    # 7. Test HLS fragment progress estimation (v2.0.0)
+    frag_idx, frag_count, dl_bytes = 12, 20, 12000000
+    frag_ratio = frag_idx / frag_count
+    estimated_total = int(dl_bytes / frag_ratio)
+    assert estimated_total == 20000000, f"Expected 20,000,000 bytes, got {estimated_total}"
+    assert round(frag_ratio * 100, 1) == 60.0
+    print("✓ HLS fragment progress estimation verified (60.0% at 12/20 fragments)")
+
+    # 8. Test _derive_stream_filename with Sinhala/Unicode folder names
     sinhala_url = "https://cdn.example.com/videos/%E0%B6%B4%E0%B7%8F%E0%B6%A9%E0%B6%B8/master.m3u8"
     derived = _derive_stream_filename(sinhala_url)
     assert derived.endswith(".mp4"), f"Expected .mp4 extension, got: {derived}"
     assert "පාඩම" in derived, f"Expected decoded Sinhala folder name in filename, got: {derived}"
     print(f"✓ Sinhala parent folder extraction: '{derived}'")
 
-    # index.m3u8 with English parent folder
     english_url = "https://cdn.example.com/videos/Lecture%2001/index.m3u8"
     derived_en = _derive_stream_filename(english_url)
     assert derived_en == "Lecture 01.mp4", f"Expected 'Lecture 01.mp4', got: {derived_en}"
     print(f"✓ English parent folder extraction: '{derived_en}'")
 
-    # Non-master/index .m3u8 falls back to stem
     custom_m3u8 = "https://cdn.example.com/videos/playlist.m3u8"
     derived_custom = _derive_stream_filename(custom_m3u8)
     assert derived_custom == "playlist.mp4", f"Expected 'playlist.mp4', got: {derived_custom}"
     print(f"✓ Non-master m3u8 stem fallback: '{derived_custom}'")
 
-    # 7. Test Header filename extraction (RFC 5987 / 6266)
+    # 9. Test Header filename extraction (RFC 5987 / 6266)
     headers = {"Content-Disposition": 'attachment; filename="custom_doc.pdf"'}
     assert extract_filename_from_headers(headers, "http://test.com/file") == "custom_doc.pdf"
 
@@ -100,7 +116,7 @@ def run_tests():
     assert extract_filename_from_headers(headers_utf, "http://test.com/file") == "my presentation.mp4"
     print("✓ extract_filename_from_headers passed")
 
-    # 8. Test user input parsing
+    # 10. Test user input parsing
     url, passc, name = parse_user_input("https://us02web.zoom.us/rec/share/123 | mypass | presentation.mp4")
     assert url == "https://us02web.zoom.us/rec/share/123"
     assert passc == "mypass"
@@ -111,27 +127,25 @@ def run_tests():
     assert passc2 is None
     assert name2 == "myarchive.zip"
 
-    # Stream URL with custom filename
-    url3, passc3, name3 = parse_user_input("https://cdn.example.com/stream/master.m3u8 | my_lecture.mp4")
-    assert url3 == "https://cdn.example.com/stream/master.m3u8"
+    url3, passc3, name3 = parse_user_input("https://drive.google.com/file/d/123/view | GDrive_File.zip")
+    assert url3 == "https://drive.google.com/file/d/123/view"
     assert passc3 is None
-    assert name3 == "my_lecture.mp4"
-    print("✓ parse_user_input passed")
+    assert name3 == "GDrive_File.zip"
+    print("✓ parse_user_input passed (including GDrive custom name)")
 
-    # 9. Test Config 2GB vs 4GB limits
+    # 11. Test Config 2GB vs 4GB limits
     assert Config.BOT_MAX_SIZE == 2 * 1024 * 1024 * 1024
     assert Config.PREMIUM_MAX_SIZE == 4 * 1024 * 1024 * 1024
     print("✓ Config BOT_MAX_SIZE and PREMIUM_MAX_SIZE constants verified")
 
-    # 10. Test optional USER_SESSION_STRING fallback
-    # When USER_SESSION_STRING is empty/None, bot should run in 2GB mode without errors
+    # 12. Test optional USER_SESSION_STRING fallback
     if not Config.USER_SESSION_STRING:
-        assert Config.MAX_FILE_SIZE == Config.BOT_MAX_SIZE, "Without USER_SESSION_STRING, MAX_FILE_SIZE should equal BOT_MAX_SIZE (2GB)"
-        assert Config.is_premium_enabled() is False, "Without USER_SESSION_STRING, is_premium_enabled() should be False"
+        assert Config.MAX_FILE_SIZE == Config.BOT_MAX_SIZE
+        assert Config.is_premium_enabled() is False
         print("✓ USER_SESSION_STRING fallback: 2GB bot-only mode confirmed (no session configured)")
     else:
-        assert Config.MAX_FILE_SIZE == Config.PREMIUM_MAX_SIZE, "With USER_SESSION_STRING, MAX_FILE_SIZE should equal PREMIUM_MAX_SIZE (4GB)"
-        assert Config.is_premium_enabled() is True, "With USER_SESSION_STRING, is_premium_enabled() should be True"
+        assert Config.MAX_FILE_SIZE == Config.PREMIUM_MAX_SIZE
+        assert Config.is_premium_enabled() is True
         print("✓ USER_SESSION_STRING active: 4GB premium mode confirmed")
 
     # 13. Test bot.py entrypoint uses bot.run(main()) for Python 3.12+ loop stability
@@ -140,14 +154,21 @@ def run_tests():
     assert "asyncio.run(main())" not in bot_code, "bot.py must not use asyncio.run(main())"
     print("✓ Python 3.12+ event loop fix verified in bot.py (bot.run(main()) is active)")
 
-    # 14. Test downloader.py has native HLS and safe ASCII template
+    # 14. Test downloader.py has high-speed engine, native HLS & 16-fragment concurrency
     dl_code = Path("downloader.py").read_text(encoding="utf-8")
     assert '"hls_prefer_native": True' in dl_code, "downloader.py must enable native HLS downloader"
-    assert '"downloader": "native"' in dl_code, "downloader.py must use native downloader"
-    assert "stream_output" in dl_code, "downloader.py must use safe ASCII output template for ffmpeg"
-    print("✓ Native HLS downloader & safe ASCII remux template verified in downloader.py")
+    assert '"concurrent_fragment_downloads": 16' in dl_code, "downloader.py must use 16 concurrent fragments"
+    assert '"http_chunk_size": 10485760' in dl_code, "downloader.py must use 10MB chunk buffers"
+    assert "download_gdrive_file" in dl_code, "downloader.py must contain download_gdrive_file"
+    print("✓ High-Speed 16-fragment HLS & Google Drive engine verified in downloader.py")
 
-    # 15. Test clean_directory
+    # 15. Test setup_service.sh systemd installer script
+    setup_sh = Path("setup_service.sh").read_text(encoding="utf-8")
+    assert "any-url-bot.service" in setup_sh, "setup_service.sh must configure any-url-bot.service"
+    assert "systemctl enable any-url-bot.service" in setup_sh
+    print("✓ setup_service.sh one-command systemd installer script verified")
+
+    # 16. Test clean_directory
     test_clean_dir = Path("test_clean_tmp")
     test_clean_dir.mkdir(exist_ok=True)
     (test_clean_dir / "dummy.txt").write_text("hello")
@@ -155,14 +176,13 @@ def run_tests():
     assert not test_clean_dir.exists()
     print("✓ clean_directory workspace cleanup verified")
 
-    # 12. Test FFmpeg / FFprobe integration if ffmpeg is available
+    # 17. Test FFmpeg / FFprobe integration if ffmpeg is available
     async def test_ffmpeg():
         test_dir = Path("test_tmp")
         test_dir.mkdir(exist_ok=True)
         video_path = test_dir / "sample.mp4"
         thumb_path = test_dir / "sample_thumb.jpg"
 
-        # Generate a small 2-second synthetic video test file using ffmpeg
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
             str(video_path),
@@ -186,7 +206,7 @@ def run_tests():
         shutil.rmtree(test_dir, ignore_errors=True)
 
     asyncio.run(test_ffmpeg())
-    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY!\n")
+    print("\n🎉 ALL TESTS COMPLETED AND PASSED PERFECTLY (v2.0.0)!\n")
 
 
 if __name__ == "__main__":

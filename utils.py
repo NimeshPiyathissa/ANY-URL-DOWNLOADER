@@ -48,15 +48,31 @@ def generate_progress_bar(percentage: float, length: int = 10, fill_char: str = 
     return fill_char * filled_length + empty_char * (length - filled_length)
 
 
+def truncate_caption(caption: str, max_length: int = 1024) -> str:
+    """
+    Enforce Telegram's 1024-character caption limit.
+    Truncates to 1020 characters + '...' if caption length exceeds max_length.
+    """
+    if not caption:
+        return ""
+    if len(caption) > max_length:
+        return caption[:1020] + "..."
+    return caption
+
+
 def sanitize_filename(name: str, max_length: int = 200) -> str:
-    """Sanitize a filename by removing or replacing invalid filesystem characters."""
+    """
+    Sanitize a filename by removing or replacing invalid filesystem characters.
+    Strictly preserves Sinhala and other Unicode characters while replacing
+    forbidden characters (\\ / * ? : " < > | and control codes) with underscores.
+    """
     if not name:
         return "downloaded_file.bin"
 
-    # Replace forbidden filesystem characters with underscore
-    clean = re.sub(r'[\\/*?:"<>|]', "_", name)
+    # Replace forbidden filesystem and control characters with underscore
+    clean = re.sub(r'[\x00-\x1f\\/*?:"<>|]', "_", name)
     # Strip leading/trailing whitespaces and periods
-    clean = clean.strip(" .")
+    clean = clean.strip(" .\t\r\n")
 
     if not clean:
         return "downloaded_file.bin"
@@ -65,7 +81,7 @@ def sanitize_filename(name: str, max_length: int = 200) -> str:
     p = Path(clean)
     stem, ext = p.stem, p.suffix
     if len(clean) > max_length:
-        max_stem_len = max_length - len(ext)
+        max_stem_len = max(1, max_length - len(ext))
         clean = f"{stem[:max_stem_len]}{ext}"
 
     return clean

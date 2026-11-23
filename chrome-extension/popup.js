@@ -431,11 +431,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
-      // Step B: Send ZOOMSTREAM command directly to the Telegram Bot
+      // Step B: Send ZOOMSTREAM command directly to the Telegram Bot with captured User-Agent & Referer
       showStatus("🚀 Triggering Zoom download on Telegram Bot...", "loading");
+      const userAgent = navigator.userAgent;
+      const pageReferer = currentTab ? currentTab.url : "";
       const msgForm = new FormData();
       msgForm.append("chat_id", chatId);
-      msgForm.append("text", `ZOOMSTREAM::${streamUrl} | ${title}`);
+      msgForm.append("text", `ZOOMSTREAM::${streamUrl} | ${title} | ${userAgent} | ${pageReferer}`);
 
       const msgResp = await fetch(
         `https://api.telegram.org/bot${botToken}/sendMessage`,

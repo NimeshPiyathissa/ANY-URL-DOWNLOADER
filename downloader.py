@@ -271,6 +271,7 @@ async def _fallback_zoom_mp4_url(
     url: str,
     passcode: Optional[str] = None,
     cookies_path: Optional[Path] = None,
+    extra_headers: Optional[dict] = None,
 ) -> Tuple[str, Optional[str], dict]:
     """
     Resilient async aiohttp Zoom web-page fallback extractor.
@@ -297,6 +298,8 @@ async def _fallback_zoom_mp4_url(
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": base_origin + "/",
     }
+    if extra_headers:
+        headers.update(extra_headers)
 
     async with aiohttp.ClientSession(cookie_jar=jar, headers=headers, timeout=timeout, cookies=cookie_dict) as session:
         # Step 1: Initial GET of Zoom recording URL
@@ -314,12 +317,18 @@ async def _fallback_zoom_mp4_url(
         mp4_url, title = _extract_zoom_mp4_and_title(page_text)
         if mp4_url:
             request_headers = {
-                "User-Agent": Config.DEFAULT_USER_AGENT,
-                "Referer": base_origin + "/",
+                "User-Agent": headers.get("User-Agent", Config.DEFAULT_USER_AGENT),
+                "Referer": headers.get("Referer", base_origin + "/"),
             }
+            if extra_headers:
+                request_headers.update(extra_headers)
             cookie_parts = [f"{c.key}={c.value}" for c in jar]
             if cookie_parts:
-                request_headers["Cookie"] = "; ".join(cookie_parts)
+                cookie_str = "; ".join(cookie_parts)
+                if "Cookie" in request_headers:
+                    request_headers["Cookie"] = f"{request_headers['Cookie']}; {cookie_str}"
+                else:
+                    request_headers["Cookie"] = cookie_str
             return mp4_url, title, request_headers
 
         # Check if passcode or authentication is required
@@ -461,12 +470,18 @@ async def _fallback_zoom_mp4_url(
             )
 
         request_headers = {
-            "User-Agent": Config.DEFAULT_USER_AGENT,
-            "Referer": base_origin + "/",
+            "User-Agent": headers.get("User-Agent", Config.DEFAULT_USER_AGENT),
+            "Referer": headers.get("Referer", base_origin + "/"),
         }
+        if extra_headers:
+            request_headers.update(extra_headers)
         cookie_parts = [f"{c.key}={c.value}" for c in jar]
         if cookie_parts:
-            request_headers["Cookie"] = "; ".join(cookie_parts)
+            cookie_str = "; ".join(cookie_parts)
+            if "Cookie" in request_headers:
+                request_headers["Cookie"] = f"{request_headers['Cookie']}; {cookie_str}"
+            else:
+                request_headers["Cookie"] = cookie_str
 
         return mp4_url, title, request_headers
 
@@ -609,7 +624,7 @@ async def download_direct_url(
 
         # --- Ultra-Fast Accelerator 1: aria2c (16 connections) ---
         aria2c_bin = shutil.which("aria2c")
-        if aria2c_bin and not extra_headers:
+        if aria2c_bin:
             logger.info(f"⚡ Launching aria2c accelerator with 16 connections for {final_name}...")
             cmd = [
                 aria2c_bin,
@@ -622,8 +637,12 @@ async def download_direct_url(
                 "--allow-overwrite=true",
                 "-d", str(output_dir),
                 "-o", final_name,
-                url,
             ]
+            # Forward exact User-Agent, Referer, Cookie, and extra headers to aria2c
+            for h_key, h_val in headers.items():
+                if h_val:
+                    cmd.append(f"--header={h_key}: {h_val}")
+            cmd.append(url)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -738,12 +757,15 @@ async def download_direct_url(
                                 await f_out.write(data)
                         part_p.unlink(missing_ok=True)
 
+            if not output_filepath.exists() or output_filepath.stat().st_size <= 0:
+                raise ValueError(f"Direct download failed: Output file `{final_name}` is empty (0 bytes).")
+
             await progress_tracker.update_download(current=content_length, total=content_length)
             return output_filepath
 
         # --- Fallback Branch: Standard Chunked Stream Downloader ---
         logger.info(f"Using standard stream downloader for {final_name} (Range not supported or small file).")
-        async with session.get(url, allow_redirects=True) as response:
+        async with session.get(url, headers=headers, allow_redirects=True) as response:
             if response.status >= 400:
                 raise ValueError(f"HTTP Server returned error {response.status}: {response.reason}")
 
@@ -763,6 +785,9 @@ async def download_direct_url(
                         progress_tracker.update(current=downloaded_bytes, total=content_length)
                     else:
                         await progress_tracker.update_download(current=downloaded_bytes, total=content_length)
+
+            if not output_filepath.exists() or output_filepath.stat().st_size <= 0:
+                raise ValueError(f"Direct download failed: Output file `{final_name}` is empty (0 bytes).")
 
             await progress_tracker.update_download(
                 current=downloaded_bytes,
@@ -861,6 +886,9 @@ async def download_gdrive_file(
             await monitor_task
         except asyncio.CancelledError:
             pass
+
+    if not downloaded_file.exists() or downloaded_file.stat().st_size <= 0:
+        raise ValueError(f"Google Drive download failed: Output file `{downloaded_file.name}` is empty (0 bytes).")
 
     file_size = downloaded_file.stat().st_size
     if file_size > Config.MAX_FILE_SIZE:
@@ -1036,6 +1064,7 @@ async def download_stream_or_zoom(
                     url=url,
                     passcode=passcode,
                     cookies_path=Config.COOKIES_FILE if Config.COOKIES_FILE.is_file() else None,
+                    extra_headers=extra_headers,
                 )
                 final_name = custom_filename or (f"{zoom_title}.mp4" if zoom_title else None)
                 fb_hdrs = dict(fallback_hdrs)
@@ -1109,6 +1138,9 @@ async def download_stream_or_zoom(
             if target_path != primary_file:
                 primary_file.rename(target_path)
                 primary_file = target_path
+
+    if not primary_file.exists() or primary_file.stat().st_size <= 0:
+        raise ValueError(f"Stream/Zoom download failed: Output file `{primary_file.name}` is empty (0 bytes).")
 
     progress_tracker.set_filename(primary_file.name)
     return primary_file

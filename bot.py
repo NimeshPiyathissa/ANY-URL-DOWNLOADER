@@ -41,6 +41,7 @@ from utils import (
     get_video_metadata,
     is_video_file,
     sanitize_filename,
+    truncate_caption,
 )
 
 # Configure logging
@@ -269,6 +270,9 @@ def is_authorized(user_id: int) -> bool:
     """Check if user is authorized to use the bot."""
     if not Config.AUTHORIZED_USERS:
         return True
+    bot_id = Config.extract_bot_id()
+    if bot_id and user_id == bot_id:
+        return True
     return user_id in Config.AUTHORIZED_USERS
 
 
@@ -308,7 +312,7 @@ def build_welcome_text(user_first_name: str) -> str:
     )
     return (
         f"👋 Hello **{user_first_name}**!\n\n"
-        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v2.3.0**.\n\n"
+        f"Welcome to **Any URL, HLS, Zoom & Google Drive Downloader Bot v3.0.0**.\n\n"
         f"**System Capabilities:**\n"
         f"• **Active Upload Limit:** {mode_label}\n"
         f"• 📥 **Direct URLs:** 8-connection parallel chunk downloading for max speed.\n"
@@ -376,7 +380,7 @@ async def status_handler(client: Client, message: Message):
     max_size_label = "4.0 GB (Hybrid Premium)" if Config.is_premium_enabled() else "2.0 GB (Bot Only)"
 
     status_text = (
-        f"📊 **System Status & Health (v2.3.0)**\n\n"
+        f"📊 **System Status & Health (v3.0.0)**\n\n"
         f"• **Active Downloads:** `{ACTIVE_DOWNLOADS_COUNT} / {Config.MAX_CONCURRENT_DOWNLOADS}`\n"
         f"• **Max Upload Size:** `{max_size_label}`\n"
         f"• **Direct Engine:** `8-Connection Parallel Range (aiohttp)`\n"
@@ -674,6 +678,8 @@ async def download_request_handler(client: Client, message: Message):
         parts = [p.strip() for p in payload.split("|") if p.strip()]
         stream_url = parts[0]
         custom_name = parts[1] if len(parts) > 1 else None
+        custom_ua = parts[2] if len(parts) > 2 else None
+        custom_ref = parts[3] if len(parts) > 3 else None
 
         if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
             await message.reply_text("⚠️ **Invalid URL:** Please provide a valid HTTP/HTTPS video stream URL.")
@@ -682,11 +688,16 @@ async def download_request_handler(client: Client, message: Message):
         if custom_name and not Path(custom_name).suffix:
             custom_name = f"{custom_name}.mp4"
 
-        # Prepare Zoom Referer and session Cookie headers
-        parsed = urllib.parse.urlparse(stream_url)
-        referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+        # Prepare Zoom Referer, User-Agent, and session Cookie headers
+        user_agent = custom_ua or Config.DEFAULT_USER_AGENT
+        if custom_ref:
+            referer = custom_ref
+        else:
+            parsed = urllib.parse.urlparse(stream_url)
+            referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+
         extra_headers = {
-            "User-Agent": Config.DEFAULT_USER_AGENT,
+            "User-Agent": user_agent,
             "Referer": referer,
         }
         if Config.COOKIES_FILE.is_file():
@@ -913,6 +924,11 @@ async def execute_download_pipeline(
                 raise FileNotFoundError("The file was not found on disk after download.")
 
             file_size = downloaded_file.stat().st_size
+            if file_size <= 0:
+                raise ValueError(
+                    f"⚠️ **Corrupted / Empty File:** Downloaded file `{downloaded_file.name}` is 0 bytes. "
+                    "The download stream terminated or provided no content. Upload aborted."
+                )
             if file_size > Config.MAX_FILE_SIZE:
                 limit_str = format_bytes(Config.MAX_FILE_SIZE)
                 raise ValueError(
@@ -974,15 +990,22 @@ async def execute_download_pipeline(
                 await status_msg.edit_text("❌ **Upload Cancelled by user.**")
                 return
 
-            # Determine final caption
+            # Determine final caption (strictly enforced <= 1024 characters for Telegram limit)
             if user_caption_choice and user_caption_choice != "DEFAULT":
-                caption = user_caption_choice.strip()
+                raw_caption = user_caption_choice.strip()
             else:
-                caption = (
+                raw_caption = (
                     f"📁 **File:** `{downloaded_file.name}`\n"
                     f"💾 **Size:** `{format_bytes(file_size)}`\n"
                     f"{'⏱ **Duration:** `' + format_time(duration) + '`' if duration > 0 else ''}"
                 ).strip()
+            caption = truncate_caption(raw_caption, max_length=1024)
+
+            # Ensure file is valid and non-empty before upload
+            if not downloaded_file.exists() or downloaded_file.stat().st_size <= 0:
+                raise ValueError(
+                    f"⚠️ **Upload Aborted:** File `{downloaded_file.name}` is empty (0 bytes) or missing."
+                )
 
             # --- 4. Hybrid Upload Stage ---
             progress.set_mode("upload")
@@ -1104,7 +1127,12 @@ async def execute_download_pipeline(
 
     finally:
         ACTIVE_DOWNLOADS_COUNT = max(0, ACTIVE_DOWNLOADS_COUNT - 1)
-        # 5. Mandatory Workspace Cleanup (Guarantee temporary files are removed immediately)
+        # State Cleanup: Clean up any interactive waiters for this user/task
+        PASSCODE_WAITERS.pop(effective_user_id, None)
+        if effective_user_id in CAPTION_WAITERS and CAPTION_WAITERS[effective_user_id][1] == task_id:
+            CAPTION_WAITERS.pop(effective_user_id, None)
+        # Guaranteed Disk Cleanup: Remove temporary task workspace immediately
+        shutil.rmtree(task_dir, ignore_errors=True)
         clean_directory(task_dir)
 
 
@@ -1133,6 +1161,8 @@ async def zoomstream_handler(client: Client, message: Message):
     parts = [p.strip() for p in raw_args.split("|") if p.strip()]
     stream_url = parts[0]
     custom_name = parts[1] if len(parts) > 1 else None
+    custom_ua = parts[2] if len(parts) > 2 else None
+    custom_ref = parts[3] if len(parts) > 3 else None
 
     if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
         await message.reply_text("⚠️ **Invalid URL:** Please provide a valid HTTP/HTTPS video stream URL.")
@@ -1141,11 +1171,16 @@ async def zoomstream_handler(client: Client, message: Message):
     if custom_name and not Path(custom_name).suffix:
         custom_name = f"{custom_name}.mp4"
 
-    # Prepare Zoom Referer and session Cookie headers
-    parsed = urllib.parse.urlparse(stream_url)
-    referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+    # Prepare Zoom Referer, User-Agent, and session Cookie headers
+    user_agent = custom_ua or Config.DEFAULT_USER_AGENT
+    if custom_ref:
+        referer = custom_ref
+    else:
+        parsed = urllib.parse.urlparse(stream_url)
+        referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+
     extra_headers = {
-        "User-Agent": Config.DEFAULT_USER_AGENT,
+        "User-Agent": user_agent,
         "Referer": referer,
     }
     if Config.COOKIES_FILE.is_file():

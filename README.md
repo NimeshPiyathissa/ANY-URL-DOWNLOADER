@@ -5,11 +5,11 @@
 <h1 align="center">⚡ ANY URL, HLS (.m3u8), ZOOM & GOOGLE DRIVE DOWNLOADER BOT</h1>
 
 <p align="center">
-  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 16-Connection aria2c Multi-Range Engine, 32-Fragment HLS/DASH Concurrency, Resilient Zoom Web-Fallback Extractor, Telegram cookies.txt Upload, and One-Command Systemd Deployment.</b>
+  <b>Production-Grade Asynchronous Telegram Bot with 4GB Hybrid Upload Architecture, 1-Command Interactive Terminal Installer, 16-Connection aria2c Multi-Range Engine, 32-Fragment HLS/DASH Concurrency, Resilient Zoom Web-Fallback Extractor, Telegram cookies.txt Upload, and Zero-Byte Hardening.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v2.3.0"><img src="https://img.shields.io/badge/Release-v2.3.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v2.3.0"/></a>
+  <a href="https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER/releases/tag/v3.0.0"><img src="https://img.shields.io/badge/Release-v3.0.0-blueviolet?style=for-the-badge&logo=github&logoColor=white" alt="Release v3.0.0"/></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+"/></a>
   <a href="https://github.com/Mayuri-Chan/pyrofork"><img src="https://img.shields.io/badge/Pyrofork-MTProto%20v2-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Pyrofork MTProto"/></a>
   <a href="https://github.com/yt-dlp/yt-dlp"><img src="https://img.shields.io/badge/yt--dlp-32x%20Fragments%20%2B%20aria2c-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp & aria2c"/></a>
@@ -22,20 +22,32 @@
 
 ## 📑 Table of Contents
 
+- [What's New in v3.0.0](#-whats-new-in-v300)
 - [What's New in v2.3.0](#-whats-new-in-v230)
 - [What's New in v2.2.1](#-whats-new-in-v221)
-- [What's New in v2.2.0](#-whats-new-in-v220)
-- [What's New in v2.1.0](#-whats-new-in-v210)
 - [Architecture & Upload Modes](#-architecture--upload-modes)
 - [Key Features](#-key-features)
 - [Interactive UI & User Experience](#-interactive-ui--user-experience)
 - [Command & Input Syntax Reference](#-command--input-syntax-reference)
 - [Chrome / Edge Extension (1-Click cookies.txt)](#-chrome--edge-extension-1-click-cookiestxt-exporter)
 - [Project Structure](#-project-structure)
-- [One-Command Quick Deployment](#-one-command-quick-deployment-recommended)
+- [1-Command Quick Deployment (`install.sh`)](#-1-command-quick-deployment-installsh---recommended)
 - [Step-by-Step Ubuntu VPS Setup](#-step-by-step-ubuntu-vps-setup)
+- [Live Monitoring & Management](#-live-monitoring--management)
 - [Troubleshooting & FAQ](#-troubleshooting--faq)
 - [License & Contributions](#-license--contributions)
+
+---
+
+## 🚀 What's New in v3.0.0
+
+* **⚡ 1-Command Interactive Terminal Installer (`install.sh`):** Zero manual `.env` file editing. Runs with color-coded prompts, input validation (`API_ID`, `API_HASH`, `BOT_TOKEN`, `OWNER_ID`, `USER_SESSION_STRING`), automatically extracts `<bot_id>` and adds it to `ALLOWED_USERS` (preventing `Access Denied` on Chrome extension Bot API calls), provisions `python3-venv`, `pip`, `ffmpeg`, `aria2`, `git`, upgrades `yt-dlp --pre`, configures systemd with `Restart=always`, and prints a clean status table.
+* **🛡️ Hardened Zoom & CDN Header Forwarding:** Browser extension `popup.js` captures `navigator.userAgent` and passes exact `User-Agent`, `Referer`, and `Cookie` headers into both `aria2c` (`--header=...`) and all `aiohttp` parallel Range sessions in `downloader.py`, completely eliminating `403 Forbidden` mismatches on protected CDN/Zoom video chunks.
+* **🛑 Zero-Byte / Corrupt File Guard:** Checks `file_path.exists()` and `file_path.stat().st_size > 0` before uploading in `bot.py` and `downloader.py`, cleanly aborting with a descriptive error instead of crashing Pyrogram's `send_video` / `send_document`.
+* **📝 Telegram Caption & Filename Sanitization:** Strictly enforces Telegram's 1024-character caption limit (`caption[:1020] + "..."`) and replaces forbidden filesystem characters (`\ / * ? : " < > | \x00-\x1f`) while preserving Sinhala and all Unicode characters.
+* **🧹 Guaranteed Disk & State Cleanup:** Every download job is wrapped in strict `try ... finally` blocks removing temporary workspace directories (`shutil.rmtree(task_dir, ignore_errors=True)`) and purging stale `PASSCODE_WAITERS` / `CAPTION_WAITERS` so VPS storage never fills up on failed tasks.
+* **🚨 Startup Config Validation:** Validates `API_ID`, `API_HASH`, and `BOT_TOKEN` at startup with human-readable guidance pointing directly to `sudo bash install.sh` if credentials are missing or malformed.
+* **🔄 Unified `setup_service.sh`:** Delegates cleanly to `install.sh` without any code duplication.
 
 ---
 
@@ -45,40 +57,15 @@
 * **⚡ New Telegram `/zoomstream` Command:** Introduced `/zoomstream <stream_url> | <filename.mp4>` in `bot.py` with automatic `Referer: https://us06web.zoom.us/` and `cookies.txt` header injection for instantaneous stream processing.
 * **🍪 Robust Cookie Filename Matching:** `document_upload_handler` now accepts any text file starting with `cookies` (e.g. `cookies.txt`, `cookies (1).txt`, `cookies (2).txt`), saving directly to the resolved absolute path.
 * **📍 Absolute `cookies.txt` Path Resolution:** Updated `Config.COOKIES_FILE` in `config.py` and `downloader.py` to resolve via `Path(__file__).resolve().parent / "cookies.txt"` for 100% reliable systemd VPS daemon operation.
-* **📦 Upgraded Manifest V3 Extension:** Added `"scripting"` and `"webRequest"` permissions to `chrome-extension/manifest.json` (v1.1.0) for in-tab media inspection.
+* **📦 Upgraded Manifest V3 Extension:** Added `"scripting"` and `"webRequest"` permissions to `chrome-extension/manifest.json` for in-tab media inspection.
 
 ---
 
 ## 🚀 What's New in v2.2.1
 
-* **🔑 Bulletproof Zoom Passcode & CSRF Token Validation:** Completely resolved the false passcode rejection bug (`Zoom Passcode Incorrect: The meeting server rejected the provided passcode`). The bot now extracts the exact `meeting_id` from the URL path (`/rec/share/...`, `/rec/play/...`) and dynamically pulls the Zoom CSRF token (`ZOOM-CSRFTOKEN`, `_zm_ctaid`, `cred`) from response cookies and HTML/JS meta.
-* **📡 Correct Zoom Payload & Redirect Following:** Submits validation requests to `/rec/validate_meet_passwd` with the required `action: "viewdetailpage"`, `Origin`, `Referer`, and `X-Requested-With: XMLHttpRequest` headers, and automatically follows `result.redirectUrl` to retrieve the direct stream.
+* **🔑 Bulletproof Zoom Passcode & CSRF Token Validation:** Completely resolved false passcode rejection. The bot extracts `meeting_id` from the URL path (`/rec/share/...`, `/rec/play/...`) and dynamically pulls the Zoom CSRF token (`ZOOM-CSRFTOKEN`, `_zm_ctaid`, `cred`) from response cookies and HTML/JS meta.
+* **📡 Correct Zoom Payload & Redirect Following:** Submits validation requests to `/rec/validate_meet_passwd` with `action: "viewdetailpage"`, `Origin`, `Referer`, and `X-Requested-With: XMLHttpRequest` headers, and automatically follows `result.redirectUrl` to retrieve the direct stream.
 * **🛡️ Bot/CAPTCHA Protection Detection:** When Zoom triggers anti-bot CAPTCHA challenges, the bot immediately detects it and provides clear instructions on exporting `cookies.txt` from the browser to unlock the video.
-* **🔗 Direct `videopassword` & `?pwd=` yt-dlp Injection:** Injects both `"videopassword"` and URL query parameter `?pwd=<passcode>` directly into `yt-dlp` before attempting fallback extraction.
-
----
-
-## 🚀 What's New in v2.2.0
-
-* **⚡ 32-Fragment Concurrent HLS/DASH Engine:** Increased segment download concurrency to 32 parallel fragments with 1MB chunk buffers, doubling download speeds for live streams and lectures while completely preventing stream stalls.
-* **🚀 High-Speed `aria2c` Multi-Connection Engine:** Direct HTTP/HTTPS downloads automatically harness `aria2c` with 16 parallel connections (`-x 16 -s 16 -k 1M`) when available on the host, with automatic fallback to our 8-worker asynchronous `aiohttp` parallel range downloader.
-* **🛠️ Resilient Google Drive File & Folder Engine:** Fixed `gdown` keyword incompatibilities (`unexpected keyword argument 'fuzzy'`), added robust regex ID extraction (`/d/...`, `uc?id=...`), and introduced automatic Google Drive folder downloading with automated `.zip` bundle archiving.
-* **📊 Live Thread-Safe Progress Bar Updates:** Enhanced `ProgressTracker` with thread-safe coroutine scheduling (`asyncio.run_coroutine_threadsafe`), ensuring real-time progress updates ([██████░░░░] % & speed & ETA) stream dynamically even from external downloader worker threads and aria2c stdout readers.
-* **📦 Automatic aria2 Provisioning:** `setup_service.sh` now automatically installs `aria2` via `apt-get` if missing during deployment.
-
----
-
-## 🚀 What's New in v2.1.0
-
-* **🔄 Resilient Zoom Web-Fallback Extractor:** When `yt-dlp` raises `Unable to extract data` or encounter password blocks, the bot automatically switches to an in-house asynchronous `aiohttp` web parser that validates passcodes via `/rec/validate_meet_passwd` and extracts direct MP4 URLs from Zoom page state.
-* **🍪 Direct Telegram `cookies.txt` Upload:** Authorized users can send a `cookies.txt` file directly in the Telegram chat; the bot automatically saves it and applies your session cookies to restricted institutional Zoom recordings.
-* **🔐 Interactive In-Chat Zoom Passcode Prompt:** When a protected Zoom recording link is detected, the bot asks for the passcode directly in chat with `⏭️ Try Without Passcode` and `❌ Cancel` buttons.
-* **⚡ 8-Connection Multi-Range Direct Downloader:** Parallel chunk downloading utilizing up to 8 simultaneous byte-range connections and 1MB buffers for maximum VPS bandwidth saturation.
-* **📡 16-Fragment HLS/DASH Concurrency:** Native Python segment downloading (`hls_prefer_native: True`) with 16 concurrent fragments and 10MB chunk buffers, completely eliminating `ffmpeg code 255` errors.
-* **📁 Native Google Drive Engine:** Direct integration with `gdown` supporting public files, shared folders, confirmation token bypass, and live progress reporting.
-* **📝 Interactive Post-Download Caption Prompt:** Send a custom Telegram caption within 30 seconds of download completion, or tap `⏭️ Use Default Filename` to proceed immediately.
-* **📊 Fragment-Aware Live Progress Bars:** Displays clean visual progress gauges (`[██████░░░░] 60.0%`), real-time speed (`MB/s`), downloaded size vs total size, ETA countdown, and fragment index (`12 / 20`).
-* **🛠️ One-Command Systemd Installer (`setup_service.sh`):** Automates user detection, environment verification, systemd unit generation, enabling, and service start in a single command.
 
 ---
 
@@ -91,7 +78,7 @@ Standard Telegram Bot API accounts are strictly limited to uploading files $\le$
                                   │   Incoming URL Task    │
                                   └───────────┬────────────┘
                                               │
-                         [Download via 8x HTTP / 16x HLS / gdown]
+                         [Download via 16x aria2c / 32x HLS / gdown]
                                               │
                              [Interactive Caption Prompt (30s)]
                                               │
@@ -116,8 +103,8 @@ Standard Telegram Bot API accounts are strictly limited to uploading files $\le$
 | **Max File Size Limit** | `2.0 GiB` | `4.0 GiB` |
 | **Required Telegram Accounts** | 1 Bot Token (via [@BotFather](https://t.me/BotFather)) | 1 Bot Token + 1 Premium User Session |
 | **Setup Complexity** | Zero configuration (default) | Paste `USER_SESSION_STRING` & `DUMP_CHAT_ID` |
-| **Direct HTTP Engine** | 8-Connection Parallel Range | 8-Connection Parallel Range |
-| **HLS / DASH Streams** | 16-Fragment Concurrency | 16-Fragment Concurrency |
+| **Direct HTTP Engine** | 16-Connection aria2c + 8-Worker Parallel Range | 16-Connection aria2c + 8-Worker Parallel Range |
+| **HLS / DASH Streams** | 32-Fragment Concurrency (yt-dlp Native) | 32-Fragment Concurrency (yt-dlp Native) |
 | **Google Drive Engine** | Yes (`gdown` integration) | Yes (`gdown` integration) |
 | **Zoom Cloud Recordings** | Interactive Passcode & Cookies | Interactive Passcode & Cookies |
 
@@ -127,28 +114,30 @@ Standard Telegram Bot API accounts are strictly limited to uploading files $\le$
 
 * **📥 Multi-Connection Direct HTTP Engine:**
   * Probes server capabilities using `Range: bytes=0-0` requests.
-  * Splits files larger than 4MB across 8 parallel worker connections downloading byte slices simultaneously.
-  * Concatenates parts in-memory/stream without corrupting multi-gigabyte archives or video files.
+  * Launches `aria2c` with 16 connections (`-x 16 -s 16 -k 1M`) forwarding exact headers.
+  * Seamless fallback to an 8-worker asynchronous `aiohttp` parallel range downloader.
+  * In-memory part concatenation without corrupting multi-gigabyte archives.
 
-* **📡 16-Fragment Concurrent HLS & DASH Ingestion (`.m3u8` / `.mpd`):**
+* **📡 32-Fragment Concurrent HLS & DASH Ingestion (`.m3u8` / `.mpd`):**
   * Auto-detects manifest URLs, bypassing complex query tokens.
-  * Native Python downloader streams 16 fragments simultaneously.
+  * Native Python downloader streams 32 fragments concurrently with 10MB chunk buffers.
   * **Intelligent Unicode/Sinhala Directory Extraction:** Automatically URL-decodes parent folder names for generic `/master.m3u8` or `/index.m3u8` links (e.g., `%E0%B6%B4%E0%B7%8F%E0%B6%A9%E0%B6%B8` $\rightarrow$ `පාඩම.mp4`).
 
 * **📁 High-Speed Google Drive Downloader:**
   * Handles standard `drive.google.com/file/d/...`, `open?id=...`, `uc?id=...`, and shared folder links.
-  * Automatically bypasses Google Drive's viral download confirmation screens for large files.
+  * Automatically creates `.zip` archives of Google Drive shared folders.
+  * Bypasses Google Drive's viral download confirmation screens for large files.
 
 * **🔐 Interactive In-Chat Zoom Passcode Prompt:**
   * Sends a probe to the recording URL. If locked, prompts the user:
     `"🔐 This Zoom recording requires a Passcode. Please reply with the Zoom Passcode now:"`
-  * Captures the reply with an in-memory `asyncio.Future` and resumes the download automatically.
+  * Captures the reply with an in-memory `asyncio.Future` and resumes download automatically.
   * Supports Netscape-formatted `cookies.txt` for passwordless organizational SSO meetings.
 
 * **📝 Interactive Custom Caption Prompt:**
   * Once downloaded, users have 30 seconds to send any custom text message with Markdown formatting to use as the Telegram media caption.
+  * Enforces Telegram's 1024-character caption limit (`caption[:1020] + "..."`).
   * Includes `⏭️ Use Default Filename` and `❌ Cancel Upload` inline action buttons.
-  * Automatically defaults to the clean file title if no reply is received within 30 seconds.
 
 * **🎬 FFmpeg Video Metadata & Streaming Optimization:**
   * Runs `ffprobe` asynchronously to extract duration, dimensions, and smartphone 90°/270° orientation tags.
@@ -168,7 +157,7 @@ Standard Telegram Bot API accounts are strictly limited to uploading files $\le$
     <td>
       <pre>
 👋 Hello Alex!
-Welcome to Any URL Downloader v2.0.0
+Welcome to Any URL Downloader v3.0.0
 
 [📥 Supported Links]  [🔐 Private Zoom]
 [📁 Google Drive   ]  [⚙️ Caption & Naming]
@@ -180,9 +169,9 @@ Welcome to Any URL Downloader v2.0.0
 📥 Downloading File...
 [██████░░░░] 60.0%
 
-⚡ Speed: 14.50 MB/s
+⚡ Speed: 24.50 MB/s
 💾 Processed: 300.00 MB / 500.00 MB
-⏳ ETA: 00:13
+⏳ ETA: 00:08
 🧩 Fragments: 12 / 20
 📁 File: Lecture_01.mp4
       </pre>
@@ -222,16 +211,17 @@ Welcome to Any URL Downloader v2.0.0
 
 ## 🍪 Chrome / Edge Extension (1-Click cookies.txt Exporter)
 
-A dedicated **Manifest V3** browser extension is included inside the [`chrome-extension/`](file:///C:/direct%20url%20downloader%20bot/chrome-extension/) directory. It enables 1-click Netscape `cookies.txt` extraction directly from your browser with optional 1-click sync to your Telegram Downloader Bot!
+A dedicated **Manifest V3** browser extension is included inside the [`chrome-extension/`](file:///C:/direct%20url%20downloader%20bot/chrome-extension/) directory. It enables 1-click Netscape `cookies.txt` extraction and 1-click Zoom stream capture directly to your Telegram Downloader Bot!
 
 ### 🌟 Key Extension Features:
+* **🎬 1-Click Send Zoom Video to Bot:** When viewing any unlocked or CAPTCHA-solved Zoom recording in your browser, one click captures the active stream, User-Agent, Referer, syncs cookies, and commands the bot to start downloading immediately!
 * **🍪 Custom Cookie Toolbar Icon:** Crisp golden-brown cookie with chocolate chips (`16px`, `48px`, `128px`).
-* **🌐 Active Domain Auto-Detection:** Automatically identifies the active domain (e.g. `us06web.zoom.us`, `drive.google.com`) and counts available session/authentication cookies.
+* **🌐 Active Domain Auto-Detection:** Automatically identifies the active domain and counts available session/authentication cookies.
 * **⬇️ 1-Click Netscape cookies.txt Download:** Instantly exports in standard Netscape HTTP Cookie File format compatible with `yt-dlp`, `curl`, and `wget`.
 * **📋 Clipboard Copy:** Copies formatted cookie text directly for quick manual pasting.
-* **🚀 Direct Telegram Bot Sync:** Send `cookies.txt` straight to your Telegram Downloader Bot chat using Telegram Bot API (`sendDocument`). Just configure your `Bot Token` & `Chat ID` once in the built-in `⚙️ Bot Sync Settings` panel!
+* **🚀 Direct Telegram Bot Sync:** Send `cookies.txt` straight to your Telegram Downloader Bot chat using Telegram Bot API (`sendDocument`).
 
-### 📥 How to Install (Chrome, Edge, Brave, Opera):
+### 📥 How to Install:
 1. Open your browser extension manager:
    - **Chrome / Brave:** Navigate to `chrome://extensions`
    - **Microsoft Edge:** Navigate to `edge://extensions`
@@ -239,14 +229,6 @@ A dedicated **Manifest V3** browser extension is included inside the [`chrome-ex
 3. Click the **Load unpacked** button.
 4. Select the `chrome-extension/` directory from this repository.
 5. Pin the **Cookie Exporter (`🍪`)** to your browser extensions toolbar!
-
-### 🔐 How to Use with Protected Links:
-1. Open any protected Zoom recording, restricted Google Drive link, or streaming site in your browser.
-2. Log in or enter the passcode to unlock the content.
-3. Click the **Cookie Exporter** icon in your browser toolbar.
-4. Either:
-   - Click **`⬇️ Download cookies.txt`** and send the file to your Telegram bot.
-   - Or configure your `Bot Token` & `Chat ID` in **`⚙️ Bot Sync Settings`** and click **`🚀 Send to Telegram Bot`** for instant 1-click automated delivery!
 
 ---
 
@@ -261,13 +243,14 @@ ANY-URL-DOWNLOADER/
 │   ├── manifest.json         # Manifest V3 extension configuration
 │   ├── popup.html            # Dark glassmorphism popup UI
 │   ├── popup.css             # Glassmorphism styling & animations
-│   └── popup.js              # Netscape cookie parser, exporter & Telegram sender
+│   └── popup.js              # Netscape cookie parser, stream exporter & Telegram sender
 ├── bot.py                    # Dual-client MTProto bot, interactive buttons & caption prompt
-├── downloader.py             # 8x HTTP parallel range, 32x HLS/DASH & Google Drive engines
-├── utils.py                  # FFmpeg/ffprobe async wrappers, thumbnails, progress bar
-├── config.py                 # Configuration parser & dynamic 2GB/4GB limit resolver
-├── test_suite.py             # Full regression & component test suite
-├── setup_service.sh          # One-command systemd installer & daemon setup
+├── downloader.py             # 16x aria2c, 8x HTTP parallel range, 32x HLS/DASH & gdown engines
+├── utils.py                  # FFmpeg/ffprobe async wrappers, thumbnails, caption truncation
+├── config.py                 # Configuration parser, auto bot-ID whitelist, 2GB/4GB limit resolver
+├── install.sh                # 1-Command interactive terminal installer (Release v3.0.0)
+├── setup_service.sh          # Systemd installer wrapper (delegates cleanly to install.sh)
+├── test_suite.py             # Full regression & component test suite (v3.0.0)
 ├── requirements.txt          # Production dependencies (Pyrofork, yt-dlp, gdown, etc.)
 ├── .env.example              # Environment variables template
 ├── .gitignore                # Git ignore rules for secrets, downloads, and sessions
@@ -276,25 +259,27 @@ ANY-URL-DOWNLOADER/
 
 ---
 
-## ⚡ One-Command Quick Deployment (Recommended)
+## ⚡ 1-Command Quick Deployment (`install.sh` - Recommended)
 
-On any fresh **Ubuntu 20.04 / 22.04 / 24.04 VPS**:
+On any fresh **Ubuntu 20.04 / 22.04 / 24.04 / Debian VPS**:
 
 ```bash
-# 1. Install Git and clone repository
-sudo apt update && sudo apt install -y git
 git clone https://github.com/NimeshPiyathissa/ANY-URL-DOWNLOADER.git /opt/any-url-downloader
 cd /opt/any-url-downloader
-
-# 2. Configure credentials
-cp .env.example .env
-nano .env
-
-# 3. Run the one-command installer
-sudo bash setup_service.sh
+sudo bash install.sh
 ```
 
-The script will automatically detect the user, set up the Python virtual environment, install dependencies, create `/etc/systemd/system/any-url-bot.service`, enable it, and start the bot immediately!
+### What `install.sh` Does Automatically:
+1. Installs all required system packages (`python3`, `python3-venv`, `python3-pip`, `ffmpeg`, `aria2`, `git`) via `apt-get`.
+2. Interactively prompts for credentials with validation (or preserves existing `.env`):
+   - `API_ID` (numeric digits)
+   - `API_HASH` (alphanumeric string)
+   - `BOT_TOKEN` (automatically extracts `BOT_ID` and adds it to `ALLOWED_USERS`!)
+   - `OWNER_ID` (your numeric Telegram User ID)
+   - `USER_SESSION_STRING` (optional for 4GB uploads)
+3. Creates the Python virtual environment and installs/upgrades dependencies (`pip`, `yt-dlp --pre`, `requirements.txt`).
+4. Generates and starts `/etc/systemd/system/any-url-bot.service` with `Restart=always`.
+5. Prints a clean status table with live logs and restart commands!
 
 ---
 
@@ -306,7 +291,7 @@ The script will automatically detect the user, set up the Python virtual environ
 ### 1. Install System Dependencies
 
 ```bash
-sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg build-essential python3-dev git
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv ffmpeg aria2 git
 ```
 
 ### 2. Setup Virtual Environment
@@ -316,6 +301,7 @@ cd /opt/any-url-downloader
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
+pip install --upgrade --pre yt-dlp
 pip install -r requirements.txt
 ```
 
@@ -330,8 +316,9 @@ BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ_1234567
 USER_SESSION_STRING=
 DUMP_CHAT_ID=
 
-# Access Control (Leave blank for public)
-AUTHORIZED_USERS=
+# Access Control (Your Owner ID + Bot ID automatically)
+ALLOWED_USERS=123456789,987654321
+AUTHORIZED_USERS=123456789,987654321
 
 # Concurrency & Performance
 MAX_CONCURRENT_DOWNLOADS=3
@@ -354,7 +341,7 @@ sudo bash setup_service.sh
 
 ---
 
-## 📊 Live Monitoring & Commands
+## 📊 Live Monitoring & Management
 
 ```bash
 # View live real-time logs
@@ -365,6 +352,9 @@ sudo systemctl restart any-url-bot.service
 
 # Check service status
 sudo systemctl status any-url-bot.service
+
+# Stop bot
+sudo systemctl stop any-url-bot.service
 
 # Pull latest updates from GitHub
 cd /opt/any-url-downloader
@@ -385,11 +375,17 @@ Generate a Pyrofork/Pyrogram session string from an account with Telegram Premiu
 <details>
 <summary><b>2. Zoom links fail with 403 Forbidden</b></summary>
 <br>
-Some universities or enterprises require login authentication. Export your browser cookies in Netscape format using an extension like <i>Get cookies.txt LOCALLY</i>, save them as <code>cookies.txt</code> in <code>/opt/any-url-downloader/cookies.txt</code>, and restart the bot.
+Some universities or enterprises require login authentication. Export your browser cookies in Netscape format using the included <i>Any URL Downloader</i> browser extension, send them as <code>cookies.txt</code> directly into the bot chat, or click <b>🎬 Send Zoom Video to Bot</b> directly from the video playback page.
 </details>
 
 <details>
-<summary><b>3. Large Google Drive files show quota exceeded</b></summary>
+<summary><b>3. Why did the bot say "Access Denied" when the Chrome extension sent a command?</b></summary>
+<br>
+In Release v3.0.0, <code>install.sh</code> and <code>config.py</code> automatically extract your Bot ID from <code>BOT_TOKEN</code> and include it in <code>ALLOWED_USERS</code>. This ensures messages triggered via the Bot API are always authorized.
+</details>
+
+<details>
+<summary><b>4. Large Google Drive files show quota exceeded</b></summary>
 <br>
 Google limits high-traffic public files. If a file cannot be downloaded publicly, copy it to your personal Google Drive or download directly using the shared link.
 </details>

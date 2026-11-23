@@ -221,25 +221,31 @@ async def download_stream_or_zoom(
         elif status == "finished":
             state.is_done = True
 
-    # yt-dlp output template
-    out_template = str(output_dir / "%(title).180B.%(ext)s")
+    # Safe ASCII template to prevent ffmpeg non-ASCII/Unicode/Sinhala remuxing errors
+    out_template = str(output_dir / "stream_output.%(ext)s")
+
+    # HTTP headers: Only include Referer for Zoom recordings (avoids AWS S3 403 Forbidden errors on manifests)
+    http_headers = {
+        "User-Agent": Config.DEFAULT_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if is_zoom_url(url):
+        http_headers["Referer"] = url
 
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "concurrent_fragment_downloads": 4,
+        "hls_prefer_native": True,
+        "downloader": "native",
         "max_filesize": Config.MAX_FILE_SIZE,
         "outtmpl": out_template,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [ydl_progress_hook],
-        "http_headers": {
-            "User-Agent": Config.DEFAULT_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": url,
-        },
+        "http_headers": http_headers,
     }
 
     # Pass passcode to yt-dlp if provided (Zoom recordings)
@@ -265,9 +271,13 @@ async def download_stream_or_zoom(
 
     monitor_task = asyncio.create_task(monitor_progress())
 
+    info_dict = None
+
     def run_ydl_sync():
+        nonlocal info_dict
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=True)
+            info_dict = ydl.extract_info(url, download=True)
+            return info_dict
 
     try:
         await asyncio.to_thread(run_ydl_sync)
@@ -299,7 +309,10 @@ async def download_stream_or_zoom(
             pass
 
     # Find the downloaded file in the output directory
-    downloaded_files = [f for f in output_dir.glob("*") if f.is_file() and not f.name.endswith(".part") and not f.name.endswith(".ytdl")]
+    downloaded_files = [
+        f for f in output_dir.glob("*")
+        if f.is_file() and not f.name.endswith(".part") and not f.name.endswith(".ytdl")
+    ]
     if not downloaded_files:
         raise FileNotFoundError("yt-dlp completed, but no downloaded file was found in the workspace.")
 
@@ -307,15 +320,16 @@ async def download_stream_or_zoom(
     downloaded_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     primary_file = downloaded_files[0]
 
-    # Handle custom filename or derive from stream URL
+    # Handle custom filename or derive from stream URL / Zoom metadata
     if custom_filename:
         safe_custom = sanitize_filename(custom_filename)
         # Preserve extension if missing
         if not Path(safe_custom).suffix and primary_file.suffix:
             safe_custom = f"{safe_custom}{primary_file.suffix}"
         target_path = output_dir / safe_custom
-        primary_file.rename(target_path)
-        primary_file = target_path
+        if target_path != primary_file:
+            primary_file.rename(target_path)
+            primary_file = target_path
     elif is_stream_url(url):
         # For stream URLs, derive a meaningful filename from the URL path
         derived_name = _derive_stream_filename(url)
@@ -323,6 +337,14 @@ async def download_stream_or_zoom(
         if target_path != primary_file:
             primary_file.rename(target_path)
             primary_file = target_path
+    elif is_zoom_url(url):
+        zoom_title = (info_dict or {}).get("title")
+        if zoom_title and zoom_title.strip() and zoom_title != "stream_output":
+            safe_zoom = sanitize_filename(f"{zoom_title}{primary_file.suffix}")
+            target_path = output_dir / safe_zoom
+            if target_path != primary_file:
+                primary_file.rename(target_path)
+                primary_file = target_path
 
     progress_tracker.set_filename(primary_file.name)
     return primary_file

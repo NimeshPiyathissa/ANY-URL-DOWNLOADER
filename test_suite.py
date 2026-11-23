@@ -134,7 +134,20 @@ def run_tests():
         assert Config.is_premium_enabled() is True, "With USER_SESSION_STRING, is_premium_enabled() should be True"
         print("✓ USER_SESSION_STRING active: 4GB premium mode confirmed")
 
-    # 11. Test clean_directory
+    # 13. Test bot.py entrypoint uses bot.run(main()) for Python 3.12+ loop stability
+    bot_code = Path("bot.py").read_text(encoding="utf-8")
+    assert "bot.run(main())" in bot_code, "bot.py must use bot.run(main()) as entrypoint"
+    assert "asyncio.run(main())" not in bot_code, "bot.py must not use asyncio.run(main())"
+    print("✓ Python 3.12+ event loop fix verified in bot.py (bot.run(main()) is active)")
+
+    # 14. Test downloader.py has native HLS and safe ASCII template
+    dl_code = Path("downloader.py").read_text(encoding="utf-8")
+    assert '"hls_prefer_native": True' in dl_code, "downloader.py must enable native HLS downloader"
+    assert '"downloader": "native"' in dl_code, "downloader.py must use native downloader"
+    assert "stream_output" in dl_code, "downloader.py must use safe ASCII output template for ffmpeg"
+    print("✓ Native HLS downloader & safe ASCII remux template verified in downloader.py")
+
+    # 15. Test clean_directory
     test_clean_dir = Path("test_clean_tmp")
     test_clean_dir.mkdir(exist_ok=True)
     (test_clean_dir / "dummy.txt").write_text("hello")

@@ -555,4 +555,4 @@ async def main():
 if __name__ == "__main__":
     Config.validate()
     logger.info("Starting Direct URL & Zoom Cloud Downloader Bot...")
-    asyncio.run(main())
+    bot.run(main())

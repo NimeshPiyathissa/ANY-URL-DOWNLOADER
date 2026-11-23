@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookie Exporter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-group">
+        <img src="icons/icon48.png" alt="Cookie Logo" class="cookie-logo">
+        <div class="title-group">
+          <h1 class="title">Any URL Downloader</h1>
+          <p class="subtitle">Netscape cookies.txt Exporter</p>
+        </div>
+      </div>
+      <div class="version-badge">v1.0</div>
+    </header>
+
+    <!-- Site & Cookie Info Card -->
+    <section class="card domain-card">
+      <div class="domain-header">
+        <div class="domain-info">
+          <span class="globe-icon">🌐</span>
+          <span id="active-domain" class="domain-text">Detecting site...</span>
+        </div>
+        <span id="cookie-badge" class="badge">0 cookies</span>
+      </div>
+      <div class="options-row">
+        <label class="toggle-label" title="Export all cookies matching the root domain and all its subdomains">
+          <input type="checkbox" id="include-subdomains" checked>
+          <span class="toggle-custom"></span>
+          <span class="toggle-text">Include all subdomains (<span id="root-domain-name">...</span>)</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Feedback Status Banner -->
+    <div id="status-banner" class="status-banner hidden">
+      <span id="status-icon" class="status-icon"></span>
+      <span id="status-text" class="status-text"></span>
+    </div>
+
+    <!-- Main Action Buttons -->
+    <section class="actions-group">
+      <button id="btn-download" class="btn btn-primary" title="Download cookies.txt to your Downloads folder">
+        <span class="btn-icon">⬇️</span>
+        <span class="btn-label">Download cookies.txt</span>
+      </button>
+
+      <button id="btn-copy" class="btn btn-secondary" title="Copy formatted Netscape cookies to clipboard">
+        <span class="btn-icon">📋</span>
+        <span class="btn-label">Copy Netscape Cookies</span>
+      </button>
+
+      <button id="btn-telegram" class="btn btn-telegram" title="Send cookies.txt directly to your Telegram Downloader Bot">
+        <span class="btn-icon">🚀</span>
+        <span class="btn-label">Send to Telegram Bot</span>
+      </button>
+    </section>
+
+    <!-- Collapsible Bot Settings Panel -->
+    <section class="settings-card">
+      <button id="settings-toggle" class="settings-toggle-btn" type="button">
+        <span class="settings-toggle-title">
+          <span>⚙️</span>
+          <span>Bot Sync Settings</span>
+        </span>
+        <span id="settings-chevron" class="chevron">▼</span>
+      </button>
+
+      <div id="settings-panel" class="settings-panel collapsed">
+        <div class="input-group">
+          <label for="bot-token" class="input-label">Telegram Bot Token</label>
+          <input type="password" id="bot-token" class="input-field" placeholder="123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" autocomplete="off">
+        </div>
+
+        <div class="input-group">
+          <label for="chat-id" class="input-label">Target Chat / User ID</label>
+          <input type="text" id="chat-id" class="input-field" placeholder="123456789 or @channelusername">
+        </div>
+
+        <div class="settings-actions">
+          <button id="btn-save-settings" class="btn btn-small btn-save">
+            <span>💾 Save Settings</span>
+          </button>
+          <span class="settings-hint">Token & ID are securely saved in local browser storage.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Compatible with yt-dlp, curl, wget & Python</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -29,6 +29,7 @@
 - [Key Features](#-key-features)
 - [Interactive UI & User Experience](#-interactive-ui--user-experience)
 - [Command & Input Syntax Reference](#-command--input-syntax-reference)
+- [Chrome / Edge Extension (1-Click cookies.txt)](#-chrome--edge-extension-1-click-cookiestxt-exporter)
 - [Project Structure](#-project-structure)
 - [One-Command Quick Deployment](#-one-command-quick-deployment-recommended)
 - [Step-by-Step Ubuntu VPS Setup](#-step-by-step-ubuntu-vps-setup)
@@ -206,17 +207,53 @@ Welcome to Any URL Downloader v2.0.0
 
 ---
 
+## 🍪 Chrome / Edge Extension (1-Click cookies.txt Exporter)
+
+A dedicated **Manifest V3** browser extension is included inside the [`chrome-extension/`](file:///C:/direct%20url%20downloader%20bot/chrome-extension/) directory. It enables 1-click Netscape `cookies.txt` extraction directly from your browser with optional 1-click sync to your Telegram Downloader Bot!
+
+### 🌟 Key Extension Features:
+* **🍪 Custom Cookie Toolbar Icon:** Crisp golden-brown cookie with chocolate chips (`16px`, `48px`, `128px`).
+* **🌐 Active Domain Auto-Detection:** Automatically identifies the active domain (e.g. `us06web.zoom.us`, `drive.google.com`) and counts available session/authentication cookies.
+* **⬇️ 1-Click Netscape cookies.txt Download:** Instantly exports in standard Netscape HTTP Cookie File format compatible with `yt-dlp`, `curl`, and `wget`.
+* **📋 Clipboard Copy:** Copies formatted cookie text directly for quick manual pasting.
+* **🚀 Direct Telegram Bot Sync:** Send `cookies.txt` straight to your Telegram Downloader Bot chat using Telegram Bot API (`sendDocument`). Just configure your `Bot Token` & `Chat ID` once in the built-in `⚙️ Bot Sync Settings` panel!
+
+### 📥 How to Install (Chrome, Edge, Brave, Opera):
+1. Open your browser extension manager:
+   - **Chrome / Brave:** Navigate to `chrome://extensions`
+   - **Microsoft Edge:** Navigate to `edge://extensions`
+2. Enable **Developer mode** (toggle switch in the top-right corner).
+3. Click the **Load unpacked** button.
+4. Select the `chrome-extension/` directory from this repository.
+5. Pin the **Cookie Exporter (`🍪`)** to your browser extensions toolbar!
+
+### 🔐 How to Use with Protected Links:
+1. Open any protected Zoom recording, restricted Google Drive link, or streaming site in your browser.
+2. Log in or enter the passcode to unlock the content.
+3. Click the **Cookie Exporter** icon in your browser toolbar.
+4. Either:
+   - Click **`⬇️ Download cookies.txt`** and send the file to your Telegram bot.
+   - Or configure your `Bot Token` & `Chat ID` in **`⚙️ Bot Sync Settings`** and click **`🚀 Send to Telegram Bot`** for instant 1-click automated delivery!
+
+---
+
 ## 📁 Project Structure
 
 ```ascii
 ANY-URL-DOWNLOADER/
 ├── assets/
 │   └── banner.gif            # Animated GitHub hero banner
+├── chrome-extension/         # Manifest V3 1-click cookies.txt exporter & Bot sync
+│   ├── icons/                # High-res cookie toolbar icons (16px, 48px, 128px)
+│   ├── manifest.json         # Manifest V3 extension configuration
+│   ├── popup.html            # Dark glassmorphism popup UI
+│   ├── popup.css             # Glassmorphism styling & animations
+│   └── popup.js              # Netscape cookie parser, exporter & Telegram sender
 ├── bot.py                    # Dual-client MTProto bot, interactive buttons & caption prompt
-├── downloader.py             # 8x HTTP parallel range, 16x HLS/DASH & Google Drive engines
+├── downloader.py             # 8x HTTP parallel range, 32x HLS/DASH & Google Drive engines
 ├── utils.py                  # FFmpeg/ffprobe async wrappers, thumbnails, progress bar
 ├── config.py                 # Configuration parser & dynamic 2GB/4GB limit resolver
-├── test_suite.py             # 17-point regression & component test suite
+├── test_suite.py             # Full regression & component test suite
 ├── setup_service.sh          # One-command systemd installer & daemon setup
 ├── requirements.txt          # Production dependencies (Pyrofork, yt-dlp, gdown, etc.)
 ├── .env.example              # Environment variables template

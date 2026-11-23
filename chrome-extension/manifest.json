@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Any URL Downloader - Cookie Exporter",
+  "version": "1.0.0",
+  "description": "1-click Netscape cookies.txt exporter & direct Telegram Bot sync for Zoom, Google Drive, and protected streams.",
+  "permissions": [
+    "cookies",
+    "activeTab",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Export cookies.txt",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

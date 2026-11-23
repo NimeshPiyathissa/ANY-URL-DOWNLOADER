@@ -431,11 +431,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
       }
 
-      // Step B: Send /zoomstream command directly to the Telegram Bot
-      showStatus("🚀 Triggering /zoomstream on Telegram Bot...", "loading");
+      // Step B: Send ZOOMSTREAM command directly to the Telegram Bot
+      showStatus("🚀 Triggering Zoom download on Telegram Bot...", "loading");
       const msgForm = new FormData();
       msgForm.append("chat_id", chatId);
-      msgForm.append("text", `/zoomstream ${streamUrl} | ${title}`);
+      msgForm.append("text", `ZOOMSTREAM::${streamUrl} | ${title}`);
 
       const msgResp = await fetch(
         `https://api.telegram.org/bot${botToken}/sendMessage`,
@@ -452,7 +452,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           "success"
         );
       } else {
-        const desc = msgData.description || "Failed to trigger /zoomstream";
+        const desc = msgData.description || "Failed to trigger Zoom download";
         showStatus(`❌ Telegram error: ${desc}`, "error");
       }
     } catch (err) {

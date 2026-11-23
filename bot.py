@@ -329,17 +329,19 @@ def build_welcome_text(user_first_name: str) -> str:
 async def start_handler(client: Client, message: Message):
     """Handler for /start command."""
     user = message.from_user
-    if not is_authorized(user.id):
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
+    first_name = user.first_name if user else "Friend"
+    if not is_authorized(effective_user_id):
         await message.reply_text(
             f"⛔ **Access Denied**\n\n"
             f"You are not authorized to use this bot.\n"
-            f"Your Telegram User ID: `{user.id}`\n"
+            f"Your Telegram User ID: `{effective_user_id}`\n"
             f"Please share this ID with the administrator to request access."
         )
         return
 
     await message.reply_text(
-        build_welcome_text(user.first_name),
+        build_welcome_text(first_name),
         reply_markup=get_main_menu_keyboard(),
     )
 
@@ -348,8 +350,9 @@ async def start_handler(client: Client, message: Message):
 async def help_handler(client: Client, message: Message):
     """Handler for /help command."""
     user = message.from_user
-    if not is_authorized(user.id):
-        await message.reply_text(f"⛔ Access Denied. Your User ID: `{user.id}`")
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
+    if not is_authorized(effective_user_id):
+        await message.reply_text(f"⛔ Access Denied. Your User ID: `{effective_user_id}`")
         return
 
     await message.reply_text(
@@ -363,7 +366,8 @@ async def help_handler(client: Client, message: Message):
 async def status_handler(client: Client, message: Message):
     """Handler for /status command."""
     user = message.from_user
-    if not is_authorized(user.id):
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
+    if not is_authorized(effective_user_id):
         return
 
     premium_status = "🌟 Active (4GB Hybrid Enabled)" if Config.is_premium_enabled() else "⚪ Inactive (2GB Bot Limit)"
@@ -548,7 +552,8 @@ async def callback_query_handler(client: Client, query: CallbackQuery):
 async def document_upload_handler(client: Client, message: Message):
     """Handles Telegram document uploads, specifically for updating cookies.txt (accepting cookies.txt, cookies (1).txt, etc.)."""
     user = message.from_user
-    if not is_authorized(user.id):
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
+    if not is_authorized(effective_user_id):
         await message.reply_text("⛔ **Access Denied.**")
         return
 
@@ -618,13 +623,14 @@ async def download_request_handler(client: Client, message: Message):
     """Main message handler for incoming download requests and interactive responses."""
     global ACTIVE_DOWNLOADS_COUNT
     user = message.from_user
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
 
     # Access control
-    if not is_authorized(user.id):
+    if not is_authorized(effective_user_id):
         await message.reply_text(
             f"⛔ **Access Denied**\n\n"
             f"You are not authorized to use this bot.\n"
-            f"Your Telegram User ID: `{user.id}`\n"
+            f"Your Telegram User ID: `{effective_user_id}`\n"
             f"Please share this ID with the administrator to request access."
         )
         return
@@ -634,18 +640,70 @@ async def download_request_handler(client: Client, message: Message):
     # --- Check for Active Interactive Waiters ---
 
     # 1. Check if user is replying to a Zoom Passcode prompt
-    if user.id in PASSCODE_WAITERS:
-        fut = PASSCODE_WAITERS[user.id]
+    if effective_user_id in PASSCODE_WAITERS:
+        fut = PASSCODE_WAITERS[effective_user_id]
         if not fut.done():
             fut.set_result(raw_text)
             return
 
     # 2. Check if user is replying to a Post-Download Caption prompt
-    if user.id in CAPTION_WAITERS:
-        fut, _ = CAPTION_WAITERS[user.id]
+    if effective_user_id in CAPTION_WAITERS:
+        fut, _ = CAPTION_WAITERS[effective_user_id]
         if not fut.done():
             fut.set_result(raw_text)
             return
+
+    # --- Check for Zoom Stream Extension Messages (/zoomstream or ZOOMSTREAM::) ---
+    is_zoomstream_cmd = raw_text.lower().startswith("/zoomstream")
+    is_zoomstream_prefix = raw_text.startswith("ZOOMSTREAM::")
+
+    if is_zoomstream_cmd or is_zoomstream_prefix:
+        if is_zoomstream_cmd:
+            payload = raw_text[len("/zoomstream"):].strip()
+        else:
+            payload = raw_text[len("ZOOMSTREAM::"):].strip()
+
+        if not payload:
+            await message.reply_text(
+                "ℹ️ **Usage:** `/zoomstream <direct_video_url> | <filename.mp4>`\n\n"
+                "💡 **1-Click Extension:** Use the *Any URL Downloader* Chrome/Edge extension on any unlocked Zoom page "
+                "and click **`🎬 Send Zoom Video to Bot`** to trigger this automatically!"
+            )
+            return
+
+        parts = [p.strip() for p in payload.split("|") if p.strip()]
+        stream_url = parts[0]
+        custom_name = parts[1] if len(parts) > 1 else None
+
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            await message.reply_text("⚠️ **Invalid URL:** Please provide a valid HTTP/HTTPS video stream URL.")
+            return
+
+        if custom_name and not Path(custom_name).suffix:
+            custom_name = f"{custom_name}.mp4"
+
+        # Prepare Zoom Referer and session Cookie headers
+        parsed = urllib.parse.urlparse(stream_url)
+        referer = f"{parsed.scheme}://{parsed.netloc}/" if "zoom.us" in parsed.netloc else "https://us06web.zoom.us/"
+        extra_headers = {
+            "User-Agent": Config.DEFAULT_USER_AGENT,
+            "Referer": referer,
+        }
+        if Config.COOKIES_FILE.is_file():
+            cookie_dict = _load_netscape_cookies(Config.COOKIES_FILE)
+            if cookie_dict:
+                extra_headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+
+        await execute_download_pipeline(
+            client=client,
+            message=message,
+            url=stream_url,
+            custom_filename=custom_name,
+            passcode=None,
+            extra_headers=extra_headers,
+            dl_label="Zoom Direct Stream Capture",
+        )
+        return
 
     # Parse new download URL request
     url, passcode, custom_filename = parse_user_input(raw_text)
@@ -693,13 +751,13 @@ async def download_request_handler(client: Client, message: Message):
 
         if requires_passcode:
             passcode_future = asyncio.get_running_loop().create_future()
-            PASSCODE_WAITERS[user.id] = passcode_future
+            PASSCODE_WAITERS[effective_user_id] = passcode_future
 
             prompt_msg = await message.reply_text(
                 "🔐 **This Zoom recording requires a Passcode.**\n\n"
                 "Please reply with the Zoom Passcode now to start downloading:",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_zoom_{user.id}")]
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_zoom_{effective_user_id}")]
                 ])
             )
 
@@ -713,7 +771,7 @@ async def download_request_handler(client: Client, message: Message):
                 await prompt_msg.edit_text("❌ **Zoom download cancelled.**")
                 return
             finally:
-                PASSCODE_WAITERS.pop(user.id, None)
+                PASSCODE_WAITERS.pop(effective_user_id, None)
                 try:
                     await prompt_msg.delete()
                 except Exception:
@@ -744,12 +802,13 @@ async def execute_download_pipeline(
     """
     global ACTIVE_DOWNLOADS_COUNT
     user = message.from_user
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
 
     # Create status message
     status_msg = await message.reply_text("⏳ **Queued:** Waiting for an available download slot...")
 
     # Unique task ID and isolated workspace directory
-    task_id = f"{user.id}_{uuid.uuid4().hex[:8]}"
+    task_id = f"{effective_user_id}_{uuid.uuid4().hex[:8]}"
     task_dir = Config.DOWNLOAD_DIR / task_id
 
     try:
@@ -809,15 +868,15 @@ async def execute_download_pipeline(
             except ZoomPasscodeRequiredError:
                 # Prompt user in chat for the Zoom Passcode with Try Without Passcode & Cancel buttons
                 passcode_future = asyncio.get_running_loop().create_future()
-                PASSCODE_WAITERS[user.id] = passcode_future
+                PASSCODE_WAITERS[effective_user_id] = passcode_future
 
                 prompt_msg = await message.reply_text(
                     "🔐 **Zoom requires a Passcode (or session verification) for this recording.**\n\n"
                     "Please reply with the Zoom Passcode now, or tap below:",
                     reply_markup=InlineKeyboardMarkup([
                         [
-                            InlineKeyboardButton("⏭️ Try Without Passcode", callback_data=f"zoom_no_passcode_{user.id}"),
-                            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_zoom_{user.id}"),
+                            InlineKeyboardButton("⏭️ Try Without Passcode", callback_data=f"zoom_no_passcode_{effective_user_id}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_zoom_{effective_user_id}"),
                         ]
                     ])
                 )
@@ -831,7 +890,7 @@ async def execute_download_pipeline(
                     await prompt_msg.edit_text("❌ **Zoom download cancelled.**")
                     return
                 finally:
-                    PASSCODE_WAITERS.pop(user.id, None)
+                    PASSCODE_WAITERS.pop(effective_user_id, None)
                     try:
                         await prompt_msg.delete()
                     except Exception:
@@ -876,7 +935,7 @@ async def execute_download_pipeline(
 
             # --- 3. Interactive Post-Download Caption Prompt ---
             caption_future = asyncio.get_running_loop().create_future()
-            CAPTION_WAITERS[user.id] = (caption_future, task_id)
+            CAPTION_WAITERS[effective_user_id] = (caption_future, task_id)
 
             caption_prompt_msg = await message.reply_text(
                 f"✅ **Download Complete!**\n"
@@ -904,7 +963,7 @@ async def execute_download_pipeline(
             except asyncio.TimeoutError:
                 user_caption_choice = "DEFAULT"
             finally:
-                CAPTION_WAITERS.pop(user.id, None)
+                CAPTION_WAITERS.pop(effective_user_id, None)
                 try:
                     await caption_prompt_msg.delete()
                 except Exception:
@@ -1057,7 +1116,8 @@ async def zoomstream_handler(client: Client, message: Message):
     Attaches Referer: https://us06web.zoom.us/ and cookies from cookies.txt.
     """
     user = message.from_user
-    if not is_authorized(user.id):
+    effective_user_id = message.chat.id if (message.outgoing or (user and user.is_bot)) else (user.id if user else message.chat.id)
+    if not is_authorized(effective_user_id):
         await message.reply_text("⛔ **Access Denied.**")
         return
 

@@ -258,7 +258,8 @@ def run_tests():
     assert Config.COOKIES_FILE.is_absolute(), "Config.COOKIES_FILE must be an absolute path"
     assert "zoomstream_handler" in bot_code, "bot.py must include zoomstream_handler"
     assert "execute_download_pipeline" in bot_code, "bot.py must include execute_download_pipeline"
-    print("✓ /zoomstream command handler and absolute COOKIES_FILE verified in bot.py & config.py")
+    assert "ZOOMSTREAM::" in bot_code, "bot.py must support ZOOMSTREAM:: prefix from browser extension"
+    print("✓ /zoomstream & ZOOMSTREAM:: command handlers and absolute COOKIES_FILE verified in bot.py & config.py")
 
     # 19. Test Chrome Extension Manifest V3 configuration (v2.3.0)
     manifest_code = Path("chrome-extension/manifest.json").read_text(encoding="utf-8")
